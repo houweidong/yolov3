@@ -29,16 +29,16 @@ def parse_args():
     parser.add_argument('--data-shape', type=int, default=416,
                         help="Input data shape for evaluation, use 320, 416, 608... " +
                              "Training is with random shapes from (320 to 608).")
-    parser.add_argument('--batch-size', type=int, default=64,
+    parser.add_argument('--batch-size', type=int, default=16,
                         help='Training mini-batch size')
-    parser.add_argument('--dataset', type=str, default='voc',
+    parser.add_argument('--dataset', type=str, default='coco',
                         help='Training dataset. Now support voc.')
     parser.add_argument('--num-workers', '-j', dest='num_workers', type=int,
                         default=4, help='Number of data workers, you can use larger '
                                         'number to accelerate data loading, if you CPU and GPUs are powerful.')
-    parser.add_argument('--gpus', type=str, default='0',
+    parser.add_argument('--gpus', type=str, default='0, 2',
                         help='Training with GPUs, you can specify 1,3 for example.')
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=70,
                         help='Training epochs.')
     parser.add_argument('--resume', type=str, default='',
                         help='Resume from previously saved parameters if not None. '
@@ -54,11 +54,11 @@ def parse_args():
                         help='decay rate of learning rate. default is 0.1.')
     parser.add_argument('--lr-decay-period', type=int, default=0,
                         help='interval for periodic learning rate decays. default is 0 to disable.')
-    parser.add_argument('--lr-decay-epoch', type=str, default='160,180',
+    parser.add_argument('--lr-decay-epoch', type=str, default='50,60',
                         help='epochs at which learning rate decays. default is 160,180.')
     parser.add_argument('--warmup-lr', type=float, default=0.0,
                         help='starting warmup learning rate. default is 0.0.')
-    parser.add_argument('--warmup-epochs', type=int, default=0,
+    parser.add_argument('--warmup-epochs', type=int, default=1,
                         help='number of warmup epochs.')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help='SGD momentum, default is 0.9')
@@ -265,10 +265,10 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
                     obj_loss, center_loss, scale_loss, cls_loss = net(x, gt_boxes[ix],
                                                                       *[ft[ix] for ft in fixed_targets])
                     sum_losses.append(obj_loss + center_loss + scale_loss + cls_loss)
-                    obj_losses.append(obj_loss)
-                    center_losses.append(center_loss)
-                    scale_losses.append(scale_loss)
-                    cls_losses.append(cls_loss)
+                    obj_losses.append(obj_loss.copyto(ctx[0]))
+                    center_losses.append(center_loss.copyto(ctx[0]))
+                    scale_losses.append(scale_loss.copyto(ctx[0]))
+                    cls_losses.append(cls_loss.copyto(ctx[0]))
                 autograd.backward(sum_losses)
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
