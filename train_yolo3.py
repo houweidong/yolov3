@@ -13,6 +13,7 @@ from mxnet import autograd
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
 from gluoncv.model_zoo import get_model
+from model.get_model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
@@ -20,6 +21,8 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
+from utils import get_order_config, LossMetric, get_coop_config
+from self_target import SelfDefaultTrainTransform
 
 
 def parse_args():
@@ -29,14 +32,14 @@ def parse_args():
     parser.add_argument('--data-shape', type=int, default=416,
                         help="Input data shape for evaluation, use 320, 416, 608... " +
                              "Training is with random shapes from (320 to 608).")
-    parser.add_argument('--batch-size', type=int, default=16,
+    parser.add_argument('--batch-size', type=int, default=8,
                         help='Training mini-batch size')
     parser.add_argument('--dataset', type=str, default='coco',
                         help='Training dataset. Now support voc.')
     parser.add_argument('--num-workers', '-j', dest='num_workers', type=int,
                         default=4, help='Number of data workers, you can use larger '
                                         'number to accelerate data loading, if you CPU and GPUs are powerful.')
-    parser.add_argument('--gpus', type=str, default='0, 2',
+    parser.add_argument('--gpus', type=str, default='0',
                         help='Training with GPUs, you can specify 1,3 for example.')
     parser.add_argument('--epochs', type=int, default=70,
                         help='Training epochs.')
@@ -70,7 +73,7 @@ def parse_args():
                         help='Saving parameter prefix')
     parser.add_argument('--save-interval', type=int, default=10,
                         help='Saving parameters epoch interval, best model will always be saved.')
-    parser.add_argument('--val-interval', type=int, default=1,
+    parser.add_argument('--val-interval', type=int, default=5,
                         help='Epoch interval for validation, increase the number will reduce the '
                              'training time if validation is slow.')
     parser.add_argument('--seed', type=int, default=233,
@@ -89,6 +92,7 @@ def parse_args():
     parser.add_argument('--no-mixup-epochs', type=int, default=20,
                         help='Disable mixup training if enabled in the last N epochs.')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
+    parser.add_argument('--coop-cfg', type=str, default='1, 1, 1', help='coop configs.')
     args = parser.parse_args()
     return args
 
@@ -120,14 +124,14 @@ def get_dataset(dataset, args):
 def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_workers, args):
     """Get dataloader."""
     width, height = data_shape, data_shape
-    batchify_fn = Tuple(*([Stack() for _ in range(6)] + [Pad(axis=0, pad_val=-1) for _ in
+    batchify_fn = Tuple(*([Stack() for _ in range(8)] + [Pad(axis=0, pad_val=-1) for _ in
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(
-            train_dataset.transform(YOLO3DefaultTrainTransform(width, height, net, mixup=args.mixup)),
+            train_dataset.transform(SelfDefaultTrainTransform(width, height, net, mixup=args.mixup)),
             batch_size, True, batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
     else:
-        transform_fns = [YOLO3DefaultTrainTransform(x * 32, x * 32, net, mixup=args.mixup) for x in range(10, 20)]
+        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, mixup=args.mixup) for x in range(10, 20)]
         train_loader = RandomTransformDataLoader(
             transform_fns, train_dataset, batch_size=batch_size, interval=10, last_batch='rollover',
             shuffle=True, batchify_fn=batchify_fn, num_workers=num_workers)
@@ -188,10 +192,8 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
     if args.no_wd:
         for k, v in net.collect_params('.*beta|.*gamma|.*bias').items():
             v.wd_mult = 0.0
-
-    if args.label_smooth:
-        net._target_generator._label_smooth = True
-
+    # if args.label_smooth:
+    #     net._loss._label_smooth = True
     if args.lr_decay_period > 0:
         lr_decay_epoch = list(range(args.lr_decay_period, args.epochs, args.lr_decay_period))
     else:
@@ -208,16 +210,19 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.collect_params(), 'sgd',
         {'wd': args.wd, 'momentum': args.momentum, 'lr_scheduler': lr_scheduler},
         kvstore='local')
-
     # targets
-    sigmoid_ce = gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
-    l1_loss = gluon.loss.L1Loss()
+    # sigmoid_ce = gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
+    # l1_loss = gluon.loss.L1Loss()
 
+    # TODO get coop_configs
     # metrics
-    obj_metrics = mx.metric.Loss('ObjLoss')
-    center_metrics = mx.metric.Loss('BoxCenterLoss')
-    scale_metrics = mx.metric.Loss('BoxScaleLoss')
-    cls_metrics = mx.metric.Loss('ClassLoss')
+    coop_cfg = get_coop_config(args.coop_cfg)
+    metric_loss = LossMetric(get_order_config(coop_cfg))
+    # metrics
+    # obj_metrics = mx.metric.Loss('ObjLoss')
+    # center_metrics = mx.metric.Loss('BoxCenterLoss')
+    # scale_metrics = mx.metric.Loss('BoxScaleLoss')
+    # cls_metrics = mx.metric.Loss('ClassLoss')
 
     # set up logger
     logging.basicConfig()
@@ -249,50 +254,57 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         btic = time.time()
         mx.nd.waitall()
         net.hybridize()
+        test = 0
         for i, batch in enumerate(train_data):
+            # test += 1
+            # if test > 400:
+            #     break
             batch_size = batch[0].shape[0]
+            hXw = batch[0].shape[2] * batch[0].shape[3]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_targets
-            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 6)]
-            gt_boxes = gluon.utils.split_and_load(batch[6], ctx_list=ctx, batch_axis=0)
+            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 8)]
+            gt_boxes = gluon.utils.split_and_load(batch[8], ctx_list=ctx, batch_axis=0)
             sum_losses = []
-            obj_losses = []
-            center_losses = []
-            scale_losses = []
-            cls_losses = []
+            # obj_losses = []
+            # center_losses = []
+            # scale_losses = []
+            # cls_losses = []
+            metric_loss.initial()
             with autograd.record():
                 for ix, x in enumerate(data):
-                    obj_loss, center_loss, scale_loss, cls_loss = net(x, gt_boxes[ix],
-                                                                      *[ft[ix] for ft in fixed_targets])
-                    sum_losses.append(obj_loss + center_loss + scale_loss + cls_loss)
-                    obj_losses.append(obj_loss.copyto(ctx[0]))
-                    center_losses.append(center_loss.copyto(ctx[0]))
-                    scale_losses.append(scale_loss.copyto(ctx[0]))
-                    cls_losses.append(cls_loss.copyto(ctx[0]))
+                    # obj_loss, center_loss, scale_loss, cls_loss
+                    # net.reset_stride(hXw)
+                    loss_list = net(x, gt_boxes[ix], *[ft[ix] for ft in fixed_targets])
+                    sum_losses.append(sum([l for l in loss_list]))
+                    # sum_losses.append(obj_loss + center_loss + scale_loss + cls_loss)
+                    # obj_losses.append(obj_loss)
+                    # center_losses.append(center_loss)
+                    # scale_losses.append(scale_loss)
+                    # cls_losses.append(cls_loss)
+                    metric_loss.append(loss_list)
                 autograd.backward(sum_losses)
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
-            obj_metrics.update(0, obj_losses)
-            center_metrics.update(0, center_losses)
-            scale_metrics.update(0, scale_losses)
-            cls_metrics.update(0, cls_losses)
+            # obj_metrics.update(0, obj_losses)
+            # center_metrics.update(0, center_losses)
+            # scale_metrics.update(0, scale_losses)
+            # cls_metrics.update(0, cls_losses)
+            metric_loss.update()
             if args.log_interval and not (i + 1) % args.log_interval:
-                name1, loss1 = obj_metrics.get()
-                name2, loss2 = center_metrics.get()
-                name3, loss3 = scale_metrics.get()
-                name4, loss4 = cls_metrics.get()
-                logger.info(
-                    '[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec, {}={:.3f}, {}={:.3f}, {}={:.3f}, {}={:.3f}'.format(
-                        epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), name1, loss1, name2, loss2,
-                        name3, loss3, name4, loss4))
+                name_loss_str, name_loss = metric_loss.get()
+                # logger.info(
+                #     '[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec, {}={:.3f},
+                #     {}={:.3f}, {}={:.3f}, {}={:.3f}'.format(
+                #         epoch, i, trainer.learning_rate, batch_size / (time.time() - btic),
+                #         name1, loss1, name2, loss2,
+                #         name3, loss3, name4, loss4))
+                logger.info(('[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec' + name_loss_str).format(
+                        epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), *name_loss))
             btic = time.time()
 
-        name1, loss1 = obj_metrics.get()
-        name2, loss2 = center_metrics.get()
-        name3, loss3 = scale_metrics.get()
-        name4, loss4 = cls_metrics.get()
-        logger.info('[Epoch {}] Training cost: {:.3f}, {}={:.3f}, {}={:.3f}, {}={:.3f}, {}={:.3f}'.format(
-            epoch, (time.time() - tic), name1, loss1, name2, loss2, name3, loss3, name4, loss4))
+        name_loss_str, name_loss = metric_loss.get()
+        logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), name_loss))
         if not (epoch + 1) % args.val_interval:
             # consider reduce the frequency of validation to save time
             map_name, mean_ap = validate(net, val_data, ctx, eval_metric)
@@ -313,16 +325,18 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in args.gpus.split(',') if i.strip()]
     ctx = ctx if ctx else [mx.cpu()]
 
+    coop_configs = get_coop_config(args.coop_cfg)
+
     # network
     net_name = '_'.join(('yolo3', args.network, args.dataset))
     args.save_prefix += net_name
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained_base=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)})
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
-        net = get_model(net_name, pretrained_base=True)
+        net = get_model(net_name, pretrained_base=True, coop_configs=coop_configs, label_smooth=args.label_smooth)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())
