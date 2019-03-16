@@ -102,7 +102,7 @@ class SelfLoss(Loss):
                 obj = F.where(mask, objness_t, dynamic_objness[index_xywho])
                 mask2 = mask.tile(reps=(2,))
                 # + 0.5 level to transform the range(-0.5*level, 0.5*level) to range(0, level)
-                ctr = F.where(mask2, center_t + 0.5 * level, F.zeros_like(mask2))
+                ctr = F.where(mask2, (center_t + 0.5 * level) / level, F.zeros_like(mask2))
                 scl = F.where(mask2, scale_t, F.zeros_like(mask2))
                 wgt = F.where(mask2, weight_t, F.zeros_like(mask2))
 
@@ -124,10 +124,11 @@ class SelfLoss(Loss):
             smooth_weight = 1. / self._num_class
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
-                cls = F.where(cls > 0.5, cls - smooth_weight, cls)
-                cls = F.where((cls < -0.5) + (cls > 0.5), cls, F.ones_like(cls) * smooth_weight)
+                cls = F.where(cls > 0.5, cls - smooth_weight, F.ones_like(cls) * smooth_weight)
+                # cls = F.where(cls > 0.5, cls - smooth_weight, cls)
+                # cls = F.where((cls < -0.5) + (cls > 0.5), cls, F.ones_like(cls) * smooth_weight)
             denorm_class = F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
-            class_mask = F.broadcast_mul(mask4, objectness_cls)
+            class_mask = F.broadcast_mul(mask4, objness_t)
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
         loss['cls'].append(cls_loss)
 

@@ -1,4 +1,4 @@
-from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
+# from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 import numpy as np
 import copy
 from mxnet import gluon
@@ -197,7 +197,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             # class_targets[:] = 1000  # prefill 1000 for ignores
             mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
             mask_cls[:] = 1000  # prefill 1000 for ignores
-            distance_class = nd.ones_like(mask_cls) * 1000
+            # distance_class = nd.ones_like(mask_cls) * 1000
             objectness_cls = nd.ones_like(mask_cls)
 
             # for each ground-truth, find the best matching anchor within the particular grid
@@ -275,16 +275,21 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     objectness[b, index, match, 0] = nd.where(cond, tobj, objectness[b, index, match, 0])
                     mask_obj[b, index, match, 0] = nd.where(cond, seal, mask_obj[b, index, match, 0])
 
-                    cond_class = distance_max < distance_class[b, index, match, int(np_gt_ids[b, m, 0])]
+                    # cond_class = distance_max < distance_class[b, index, match, int(np_gt_ids[b, m, 0])]
+                    cond_class = cond.expand_dims(-1).repeat(repeats=self._num_class, axis=-1)
+                    objectness_cls[b, index, match, :] = \
+                        nd.where(cond_class, nd.ones_like(cond_class), objectness_cls[b, index, match, :])
                     objectness_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                        nd.where(cond_class, tobj, objectness_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+                        nd.where(cond, tobj, objectness_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+                    mask_cls[b, index, match, :] = \
+                        nd.where(cond_class, nd.ones_like(cond_class) * 1000, mask_cls[b, index, match, :])
+                    mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
+                        nd.where(cond, seal, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+                    distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
                     # class_targets[b, index, match, int(np_gt_ids[b, m, 0])] = \
                     #     nd.where(cond_class, seal, class_targets[b, index, match, int(np_gt_ids[b, m, 0])])
-                    mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                        nd.where(cond_class, seal, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
-                    distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
-                    distance_class[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                        nd.where(cond_class, distance_max, distance_class[b, index, match, int(np_gt_ids[b, m, 0])])
+                    # distance_class[b, index, match, int(np_gt_ids[b, m, 0])] = \
+                    #     nd.where(cond_class, distance_max, distance_class[b, index, match, int(np_gt_ids[b, m, 0])])
                 # since some stages won't see partial anchors, so we have to slice the correct targets
                 objectness = self._slice(objectness, num_anchors, num_offsets)
                 center_targets = self._slice(center_targets, num_anchors, num_offsets)

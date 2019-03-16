@@ -162,7 +162,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         offsets = F.broadcast_sub(offsets.reshape((1, -1, 1, 2)).expand_dims(-2) + 0.5, 0.5 * horizontal_sig_levels)
 
         # box_centers = F.broadcast_add(ctrs, offsets) * self._stride
-        box_centers = F.broadcast_add(F.sigmoid(ctrs), offsets) * self._stride
+        box_centers = F.broadcast_add(F.broadcast_mul(F.sigmoid(ctrs), horizontal_sig_levels), offsets) * self._stride
         box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors)
         confidence = F.sigmoid(objness)
         # class_score = F.broadcast_mul(F.sigmoid(class_pred), confidence)

@@ -12,10 +12,10 @@ from mxnet import autograd
 # import gluoncv as gcv
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
-from gluoncv.model_zoo import get_model
+# from gluoncv.model_zoo import get_model
 from model.get_model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
-from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
+# from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
 from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
@@ -57,8 +57,8 @@ def parse_args():
                         help='decay rate of learning rate. default is 0.1.')
     parser.add_argument('--lr-decay-period', type=int, default=0,
                         help='interval for periodic learning rate decays. default is 0 to disable.')
-    parser.add_argument('--lr-decay-epoch', type=str, default='50,60',
-                        help='epochs at which learning rate decays. default is 160,180.')
+    parser.add_argument('--lr-decay-epoch', type=str, default='100,130',
+                        help='epochs at which learning rate decays. default is 100,130.')
     parser.add_argument('--warmup-lr', type=float, default=0.0,
                         help='starting warmup learning rate. default is 0.0.')
     parser.add_argument('--warmup-epochs', type=int, default=1,
@@ -159,7 +159,7 @@ def validate(net, val_data, ctx, eval_metric):
     # set nms threshold and topk constraint
     net.set_nms(nms_thresh=0.45, nms_topk=400)
     mx.nd.waitall()
-    net.hybridize()
+    # net.hybridize()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0, even_split=False)
         label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0, even_split=False)
@@ -253,7 +253,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
-        net.hybridize()
+        # net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
             # test += 1
@@ -304,7 +304,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
             btic = time.time()
 
         name_loss_str, name_loss = metric_loss.get()
-        logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), name_loss))
+        logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), *name_loss))
         if not (epoch + 1) % args.val_interval:
             # consider reduce the frequency of validation to save time
             map_name, mean_ap = validate(net, val_data, ctx, eval_metric)
