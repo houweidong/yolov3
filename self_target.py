@@ -104,11 +104,11 @@ class SelfDefaultTrainTransform(object):
             gt_mixratio = mx.nd.array(bbox[np.newaxis, :, -1:])
         else:
             gt_mixratio = None
-        objectness, center_targets, scale_targets, weights, class_targets, mask_obj, mask_cls = self._target_generator(
+        objectness, center_targets, scale_targets, weights, mask_cls, mask_obj = self._target_generator(
             self._fake_x, self._feat_maps, self._anchors, self._offsets,
             gt_bboxes, gt_ids, gt_mixratio)
         return (img, objectness[0], center_targets[0], scale_targets[0], weights[0],
-                class_targets[0], mask_obj[0], mask_cls[0], gt_bboxes[0])
+                mask_cls[0], mask_obj[0], gt_bboxes[0])
 
 
 class SelfPrefetchTargetGenerator(gluon.Block):
@@ -122,6 +122,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         Number of foreground classes.
 
     """
+
     def __init__(self, num_class, **kwargs):
         super(SelfPrefetchTargetGenerator, self).__init__(**kwargs)
         self._num_class = num_class
@@ -198,7 +199,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
             mask_cls[:] = 1000  # prefill 1000 for ignores
             # distance_class = nd.ones_like(mask_cls) * 1000
-            objectness_cls = nd.ones_like(mask_cls)
+            # objectness_cls = nd.ones_like(mask_cls)
 
             # for each ground-truth, find the best matching anchor within the particular grid
             # for instance, center of object 1 reside in grid (3, 4) in (16, 16) feature map
@@ -241,22 +242,22 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     distance_max = nd.array(nd.maximum(distance_x, distance_y))
                     seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
 
-            #         index = _offsets[nlayer] + loc_y * width + loc_x
-            #         center_targets[b, index, match, 0] = gtx / orig_width * width - loc_x  # tx
-            #         center_targets[b, index, match, 1] = gty / orig_height * height - loc_y  # ty
-            #         scale_targets[b, index, match, 0] = np.log(gtw / np_anchors[match, 0])
-            #         scale_targets[b, index, match, 1] = np.log(gth / np_anchors[match, 1])
-            #         weights[b, index, match, :] = 2.0 - gtw * gth / orig_width / orig_height
-            #         objectness[b, index, match, 0] = (
-            #             np_gt_mixratios[b, m, 0] if np_gt_mixratios is not None else 1)
-            #         class_targets[b, index, match, :] = 0
-            #         class_targets[b, index, match, int(np_gt_ids[b, m, 0])] = 1
-            # # since some stages won't see partial anchors, so we have to slice the correct targets
-            # objectness = self._slice(objectness, num_anchors, num_offsets)
-            # center_targets = self._slice(center_targets, num_anchors, num_offsets)
-            # scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
-            # weights = self._slice(weights, num_anchors, num_offsets)
-            # class_targets = self._slice(class_targets, num_anchors, num_offsets)
+                    #         index = _offsets[nlayer] + loc_y * width + loc_x
+                    #         center_targets[b, index, match, 0] = gtx / orig_width * width - loc_x  # tx
+                    #         center_targets[b, index, match, 1] = gty / orig_height * height - loc_y  # ty
+                    #         scale_targets[b, index, match, 0] = np.log(gtw / np_anchors[match, 0])
+                    #         scale_targets[b, index, match, 1] = np.log(gth / np_anchors[match, 1])
+                    #         weights[b, index, match, :] = 2.0 - gtw * gth / orig_width / orig_height
+                    #         objectness[b, index, match, 0] = (
+                    #             np_gt_mixratios[b, m, 0] if np_gt_mixratios is not None else 1)
+                    #         class_targets[b, index, match, :] = 0
+                    #         class_targets[b, index, match, int(np_gt_ids[b, m, 0])] = 1
+                    # # since some stages won't see partial anchors, so we have to slice the correct targets
+                    # objectness = self._slice(objectness, num_anchors, num_offsets)
+                    # center_targets = self._slice(center_targets, num_anchors, num_offsets)
+                    # scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
+                    # weights = self._slice(weights, num_anchors, num_offsets)
+                    # class_targets = self._slice(class_targets, num_anchors, num_offsets)
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
                     cond = distance_max < distance[b, index, match, 0]
                     tx = loc_x_point - grid_x
@@ -275,21 +276,12 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     objectness[b, index, match, 0] = nd.where(cond, tobj, objectness[b, index, match, 0])
                     mask_obj[b, index, match, 0] = nd.where(cond, seal, mask_obj[b, index, match, 0])
 
-                    # cond_class = distance_max < distance_class[b, index, match, int(np_gt_ids[b, m, 0])]
                     cond_class = cond.expand_dims(-1).repeat(repeats=self._num_class, axis=-1)
-                    objectness_cls[b, index, match, :] = \
-                        nd.where(cond_class, nd.ones_like(cond_class), objectness_cls[b, index, match, :])
-                    objectness_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                        nd.where(cond, tobj, objectness_cls[b, index, match, int(np_gt_ids[b, m, 0])])
                     mask_cls[b, index, match, :] = \
                         nd.where(cond_class, nd.ones_like(cond_class) * 1000, mask_cls[b, index, match, :])
                     mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
                         nd.where(cond, seal, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
                     distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
-                    # class_targets[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                    #     nd.where(cond_class, seal, class_targets[b, index, match, int(np_gt_ids[b, m, 0])])
-                    # distance_class[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                    #     nd.where(cond_class, distance_max, distance_class[b, index, match, int(np_gt_ids[b, m, 0])])
                 # since some stages won't see partial anchors, so we have to slice the correct targets
                 objectness = self._slice(objectness, num_anchors, num_offsets)
                 center_targets = self._slice(center_targets, num_anchors, num_offsets)
@@ -297,9 +289,9 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                 weights = self._slice(weights, num_anchors, num_offsets)
                 # class_targets = self._slice(class_targets, num_anchors, num_offsets)
                 mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
-                objectness_cls = self._slice(objectness_cls, num_anchors, num_offsets)
+                # objectness_cls = self._slice(objectness_cls, num_anchors, num_offsets)
                 mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
-        return objectness, center_targets, scale_targets, weights, mask_cls, mask_obj, objectness_cls
+        return objectness, center_targets, scale_targets, weights, mask_cls, mask_obj  # , objectness_cls
 
     def _slice(self, x, num_anchors, num_offsets):
         """since some stages won't see partial anchors, so we have to slice the correct targets"""
@@ -308,10 +300,10 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         offsets = [0] + num_offsets.tolist()
         ret = []
         for i in range(len(num_anchors)):
-            y = x[:, offsets[i]:offsets[i+1], anchors[i]:anchors[i+1], :]
+            y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :]
             ret.append(y.reshape((0, -3, -1)))
         return nd.concat(*ret, dim=1)
-    
+
 
 class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):
     """YOLOV3 target generator that requires network predictions.
@@ -329,6 +321,7 @@ class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):
         penalized of objectness score.
 
     """
+
     def __init__(self, num_class, ignore_iou_thresh, **kwargs):
         super(SelfDynamicTargetGeneratorSimple, self).__init__(**kwargs)
         self._num_class = num_class

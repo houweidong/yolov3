@@ -73,7 +73,7 @@ def parse_args():
                         help='Saving parameter prefix')
     parser.add_argument('--save-interval', type=int, default=10,
                         help='Saving parameters epoch interval, best model will always be saved.')
-    parser.add_argument('--val-interval', type=int, default=5,
+    parser.add_argument('--val-interval', type=int, default=1,
                         help='Epoch interval for validation, increase the number will reduce the '
                              'training time if validation is slow.')
     parser.add_argument('--seed', type=int, default=233,
@@ -124,7 +124,7 @@ def get_dataset(dataset, args):
 def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_workers, args):
     """Get dataloader."""
     width, height = data_shape, data_shape
-    batchify_fn = Tuple(*([Stack() for _ in range(8)] + [Pad(axis=0, pad_val=-1) for _ in
+    batchify_fn = Tuple(*([Stack() for _ in range(7)] + [Pad(axis=0, pad_val=-1) for _ in
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(
@@ -159,7 +159,7 @@ def validate(net, val_data, ctx, eval_metric):
     # set nms threshold and topk constraint
     net.set_nms(nms_thresh=0.45, nms_topk=400)
     mx.nd.waitall()
-    # net.hybridize()
+    net.hybridize()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0, even_split=False)
         label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0, even_split=False)
@@ -253,18 +253,18 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
-        # net.hybridize()
+        net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
             # test += 1
             # if test > 400:
             #     break
             batch_size = batch[0].shape[0]
-            hXw = batch[0].shape[2] * batch[0].shape[3]
+            # hXw = batch[0].shape[2] * batch[0].shape[3]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_targets
-            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 8)]
-            gt_boxes = gluon.utils.split_and_load(batch[8], ctx_list=ctx, batch_axis=0)
+            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 7)]
+            gt_boxes = gluon.utils.split_and_load(batch[7], ctx_list=ctx, batch_axis=0)
             sum_losses = []
             # obj_losses = []
             # center_losses = []
