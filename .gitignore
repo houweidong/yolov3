@@ -1,3 +1,9 @@
 .idea/*
 mytest.py
 venv/*
+**.log
+**.params
+**.json
+**/__pycache__
+**/__init__.py
+
