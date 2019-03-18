@@ -254,7 +254,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         btic = time.time()
         mx.nd.waitall()
         net.hybridize()
-        test = 0
+        # test = 0
         for i, batch in enumerate(train_data):
             # test += 1
             # if test > 400:

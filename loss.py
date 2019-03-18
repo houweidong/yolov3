@@ -1,10 +1,10 @@
 from mxnet import gluon
-from mxnet import nd
+# from mxnet import nd
 from mxnet import autograd
-from mxnet.gluon.loss import Loss, _apply_weighting, _reshape_like
+from mxnet.gluon.loss import Loss  # , _apply_weighting, _reshape_like
 from self_target import SelfDynamicTargetGeneratorSimple
-from collections import OrderedDict
-from utils import get_order_config
+# from collections import OrderedDict
+# from utils import get_order_config
 
 
 class SelfLoss(Loss):
@@ -75,12 +75,13 @@ class SelfLoss(Loss):
 
         """
 
-        loss = OrderedDict()
-        for sig_level in self.order_sig_config:
-            loss['obj_sig{}'.format(sig_level)] = []
-            loss['xy_sig{}'.format(sig_level)] = []
-            loss['wh_sig{}'.format(sig_level)] = []
-        loss['cls'] = []
+        # loss = OrderedDict()
+        loss = []
+        for _ in self.order_sig_config:
+            loss.append(0.)
+            loss.append(0.)
+            loss.append(0.)
+        loss.append(0.)
         dynamic_objness = self._dynamic_target(box_preds, gt_boxes)
         if len(self._coop_configs) == 1:
             dynamic_objness, objness, box_centers, box_scales = \
@@ -97,6 +98,9 @@ class SelfLoss(Loss):
             [F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1) for p in
              [objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask]]
 
+        # the coop_config is ordered in main, but one value can appear more than one time,
+        # so when current level value is same as the previous', the index will not increment
+        level_old, level_index = 0, -3
         denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
         for index_xywho in range(len(self._coop_configs)):
             with autograd.pause():
@@ -119,9 +123,14 @@ class SelfLoss(Loss):
             obj_loss = F.broadcast_mul(self._sigmoid_ce(objness[index_xywho], hard_objness_t, new_objness_mask), denorm)
             center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers[index_xywho], ctr, weight), denorm * 2)
             scale_loss = F.broadcast_mul(self._l1_loss(box_scales[index_xywho], scl, weight), denorm * 2)
-            loss['obj_sig{}'.format(level)].append(obj_loss)
-            loss['xy_sig{}'.format(level)].append(center_loss)
-            loss['wh_sig{}'.format(level)].append(scale_loss)
+            if level != level_old:
+                level_index += 3
+            loss[level_index] = obj_loss + loss[level_index]
+            loss[level_index + 1] = center_loss + loss[level_index + 1]
+            loss[level_index + 2] = scale_loss + loss[level_index + 2]
+            # loss['obj_sig{}'.format(level)].append(obj_loss)
+            # loss['xy_sig{}'.format(level)].append(center_loss)
+            # loss['wh_sig{}'.format(level)].append(scale_loss)
         with autograd.pause():
             mask3 = cls_mask <= max(self._coop_configs)
             mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
@@ -137,10 +146,9 @@ class SelfLoss(Loss):
             denorm_class = F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
             class_mask = F.broadcast_mul(mask4, objness_t)
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
-        loss['cls'].append(cls_loss)
-
-        for key, item in loss.items():
-            loss[key] = sum(item)
-
-        return [loss[l] for l in loss]
+        # loss['cls'].append(cls_loss)
+        loss[-1] = cls_loss + loss[-1]
+        # for index in range(len(loss)):
+        #     loss[index] = sum(loss[index])
+        return loss
 

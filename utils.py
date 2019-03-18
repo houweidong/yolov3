@@ -42,11 +42,13 @@ class LossMetric:
         self.__dict__['cls_list'] = []
 
     def append(self, loss_list):
+        index = 0
         for sig_level in self._order_sig_config:
-            self.__dict__['obj_sig{}list'.format(sig_level)].append(loss_list.pop(0))
-            self.__dict__['xy_sig{}list'.format(sig_level)].append(loss_list.pop(0))
-            self.__dict__['wh_sig{}list'.format(sig_level)].append(loss_list.pop(0))
-        self.__dict__['cls_list'].append(loss_list.pop(0))
+            self.__dict__['obj_sig{}list'.format(sig_level)].append(loss_list[index])
+            self.__dict__['xy_sig{}list'.format(sig_level)].append(loss_list[index + 1])
+            self.__dict__['wh_sig{}list'.format(sig_level)].append(loss_list[index + 2])
+            index += 3
+        self.__dict__['cls_list'].append(loss_list[-1])
 
     def update(self):
         for sig_level in self._order_sig_config:

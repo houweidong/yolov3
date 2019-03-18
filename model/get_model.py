@@ -4,14 +4,14 @@ import numpy as np
 import mxnet as mx
 from mxnet import gluon
 from mxnet import autograd
-from mxnet import nd
+# from mxnet import nd
 from mxnet.gluon import nn
 from mxnet.gluon.nn import BatchNorm
 from gluoncv.model_zoo.yolo.darknet import _conv2d, darknet53
 from gluoncv.model_zoo.yolo.yolo_target import YOLOV3TargetMerger
 # from gluoncv.loss import YOLOV3Loss
 from loss import SelfLoss
-from self_target import SelfDynamicTargetGeneratorSimple
+# from self_target import SelfDynamicTargetGeneratorSimple
 from utils import get_order_config
 from collections import OrderedDict
 
@@ -182,8 +182,8 @@ class YOLOOutputV3(gluon.HybridBlock):
                 raw_box_scales = ctrs.reshape((0, -1, 2))
                 class_pred = class_pred.reshape((0, -3, -1))
                 bbox = bbox.reshape((0, -1, 4))
-                all_preds = [objness, ctrs, raw_box_scales, class_pred, bbox]
-                loss_list = self._loss(*all_preds, *args)
+                # all_preds = [objness, ctrs, raw_box_scales, class_pred, bbox]
+                loss_list = self._loss(objness, ctrs, raw_box_scales, class_pred, bbox, *args)
                 return loss_list, self._loss.order_sig_config
             else:
                 return anchors, offsets
@@ -340,12 +340,13 @@ class YOLOV3(gluon.HybridBlock):
             x = stage(x)
             routes.append(x)
 
-        loss = OrderedDict()
-        for sig_level in self._order_sig_config:
-            loss['obj_sig{}'.format(sig_level)] = []
-            loss['xy_sig{}'.format(sig_level)] = []
-            loss['wh_sig{}'.format(sig_level)] = []
-        loss['cls'] = []
+        # loss = OrderedDict()
+        loss = []
+        for _ in self._order_sig_config:
+            loss.append(0.)
+            loss.append(0.)
+            loss.append(0.)
+        loss.append(0.)
 
         # the YOLO output layers are used in reverse order, i.e., from very deep layers to shallow
         for i, block, output in zip(range(len(routes)), self.yolo_blocks, self.yolo_outputs):
@@ -354,11 +355,15 @@ class YOLOV3(gluon.HybridBlock):
 
                 if autograd.is_recording():
                     loss_list, coop_config = output(tip, *args)
-                    for sig_level in coop_config:
-                        loss['obj_sig{}'.format(sig_level)].append(loss_list.pop(0))
-                        loss['xy_sig{}'.format(sig_level)].append(loss_list.pop(0))
-                        loss['wh_sig{}'.format(sig_level)].append(loss_list.pop(0))
-                    loss['cls'].append(loss_list.pop(0))
+                    for ii, sig_level in enumerate(coop_config):
+                        loss_index = self._order_sig_config.index(sig_level)
+                        loss[loss_index] = loss_list[ii*3] + loss[loss_index]
+                        loss[loss_index + 1] = loss_list[ii*3 + 1] + loss[loss_index + 1]
+                        loss[loss_index + 2] = loss_list[ii*3 + 2] + loss[loss_index + 2]
+                        # loss['obj_sig{}'.format(sig_level)].append(loss_list.pop(0))
+                        # loss['xy_sig{}'.format(sig_level)].append(loss_list.pop(0))
+                        # loss['wh_sig{}'.format(sig_level)].append(loss_list.pop(0))
+                    loss[-1] = loss_list[-1] + loss[-1]
                 else:
                     anchors, offsets = output(tip)
                     all_anchors.append(anchors)
@@ -383,10 +388,10 @@ class YOLOV3(gluon.HybridBlock):
             # during training, the network behaves differently since we don't need detection results
             if autograd.is_recording():
                 # generate losses and return them directly
-                for key, item in loss.items():
-                    loss[key] = sum(item)
-
-                return [loss[l] for l in loss]
+                # for key, item in loss.items():
+                #     loss[key] = sum(item)
+                # return [loss[l] for l in loss]
+                return loss
 
             # this is only used in DataLoader transform function.
             return all_anchors, all_offsets, all_feat_maps
