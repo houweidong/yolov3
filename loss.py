@@ -88,10 +88,10 @@ class SelfLoss(Loss):
                 [[dynamic_objness], [objness], [box_centers], [box_scales]]
         else:
             dynamic_objness, objness = \
-                [p.reshape(0, -1, len(self._coop_configs, 1)).split(num_outputs=len(self._coop_configs), axis=2)
+                [p.reshape(0, -1, len(self._coop_configs), 1).split(num_outputs=len(self._coop_configs), axis=2)
                      .reshape(0, -1, 1) for p in[dynamic_objness, objness]]
             box_centers, box_scales = \
-                [p.reshape(0, -1, len(self._coop_configs, 2)).split(num_outputs=len(self._coop_configs), axis=2)
+                [p.reshape(0, -1, len(self._coop_configs), 2).split(num_outputs=len(self._coop_configs), axis=2)
                      .reshape(0, -1, 2) for p in [box_centers, box_scales]]
 
         objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask = \
