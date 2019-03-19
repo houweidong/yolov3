@@ -11,7 +11,6 @@ from gluoncv.data.transforms import image as timage
 from gluoncv.data.transforms import experimental
 
 
-# class SelfDefaultTrainTransform(YOLO3DefaultTrainTransform):
 class SelfDefaultTrainTransform(object):
     """Default YOLO training transform which includes tons of image augmentations.
 

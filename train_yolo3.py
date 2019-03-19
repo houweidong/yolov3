@@ -9,7 +9,6 @@ import mxnet as mx
 # from mxnet import nd
 from mxnet import gluon
 from mxnet import autograd
-# import gluoncv as gcv
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
 # from gluoncv.model_zoo import get_model

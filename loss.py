@@ -1,10 +1,8 @@
 from mxnet import gluon
 # from mxnet import nd
 from mxnet import autograd
-from mxnet.gluon.loss import Loss  # , _apply_weighting, _reshape_like
+from mxnet.gluon.loss import Loss
 from self_target import SelfDynamicTargetGeneratorSimple
-# from collections import OrderedDict
-# from utils import get_order_config
 
 
 class SelfLoss(Loss):
