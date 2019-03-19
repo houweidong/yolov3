@@ -75,7 +75,6 @@ class SelfLoss(Loss):
 
         """
 
-        # loss = OrderedDict()
         loss = []
         for _ in self.order_sig_config:
             loss.append(0.)
@@ -110,7 +109,6 @@ class SelfLoss(Loss):
                 mask2 = mask.tile(reps=(2,))
                 # + 0.5 level to transform the range(-0.5*level, 0.5*level) to range(0, level)
                 ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
-
                 # similar to label smooth, here smooth the 0 and 1 label for x y
                 # ctr = F.where(ctr>=0.95, F.ones_like(ctr)*0.95, ctr)
                 # ctr = F.where(ctr<=0.05, F.ones_like(ctr)*0.05, ctr)
@@ -128,27 +126,17 @@ class SelfLoss(Loss):
             loss[level_index] = obj_loss + loss[level_index]
             loss[level_index + 1] = center_loss + loss[level_index + 1]
             loss[level_index + 2] = scale_loss + loss[level_index + 2]
-            # loss['obj_sig{}'.format(level)].append(obj_loss)
-            # loss['xy_sig{}'.format(level)].append(center_loss)
-            # loss['wh_sig{}'.format(level)].append(scale_loss)
         with autograd.pause():
             mask3 = cls_mask <= max(self._coop_configs)
             mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
-            # cls_min = F.min(class_t, axis=-1, keepdims=True).tile(reps=(self._num_class,))
-            # cls = F.where(cls_min == class_t, cls_min, F.zeros_like(mask3))
             cls = F.where(mask3, F.ones_like(mask3), F.zeros_like(mask3))
             smooth_weight = 1. / self._num_class
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
                 cls = F.where(cls > 0.5, cls - smooth_weight, F.ones_like(cls) * smooth_weight)
-                # cls = F.where(cls > 0.5, cls - smooth_weight, cls)
-                # cls = F.where((cls < -0.5) + (cls > 0.5), cls, F.ones_like(cls) * smooth_weight)
             denorm_class = F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
             class_mask = F.broadcast_mul(mask4, objness_t)
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
-        # loss['cls'].append(cls_loss)
         loss[-1] = cls_loss + loss[-1]
-        # for index in range(len(loss)):
-        #     loss[index] = sum(loss[index])
         return loss
 

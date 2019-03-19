@@ -146,12 +146,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         # components
         # transpose to (batch, height * width, num_anchor, num_xywho, 5)
         xywho = pred.slice_axis(axis=-1, begin=0, end=-self._classes).reshape((0, 0, 0, self._xywho_num, 5))
-        # raw_box_centers = pred.slice_axis(axis=-1, begin=0, end=2)
-        # raw_box_scales = pred.slice_axis(axis=-1, begin=2, end=4)
-        # objness = pred.slice_axis(axis=-1, begin=4, end=5)
-        # class_pred = pred.slice_axis(axis=-1, begin=5, end=None)
         class_pred = pred.slice_axis(axis=-1, begin=-self._classes, end=None)
-        # ctrs = F.broadcast_mul(F.sigmoid(xywho.slice_axis(axis=-1, begin=0, end=2)), horizontal_sig_levels)
         ctrs = xywho.slice_axis(axis=-1, begin=0, end=2)
         raw_box_scales = xywho.slice_axis(axis=-1, begin=2, end=4)
         objness = xywho.slice_axis(axis=-1, begin=4, end=None)
@@ -161,28 +156,21 @@ class YOLOOutputV3(gluon.HybridBlock):
         # reshape to (1, height*width, 1, 2)
         offsets = F.broadcast_sub(offsets.reshape((1, -1, 1, 2)).expand_dims(-2) + 0.5, 0.5 * horizontal_sig_levels)
 
-        # box_centers = F.broadcast_add(ctrs, offsets) * self._stride
         box_centers = F.broadcast_add(F.broadcast_mul(F.sigmoid(ctrs), horizontal_sig_levels), offsets) * self._stride
         box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors)
         confidence = F.sigmoid(objness)
-        # class_score = F.broadcast_mul(F.sigmoid(class_pred), confidence)
         class_score = F.broadcast_mul(F.sigmoid(class_pred).expand_dims(-2), confidence)
         wh = box_scales / 2.0
         bbox = F.concat(box_centers - wh, box_centers + wh, dim=-1)
 
-        # NDarray (h*w, anchor_num, xywho_num)
-        # shape_array = F.shape_array(bbox).expand_dims(0)
-
         if autograd.is_training():
             # during training, we don't need to convert whole bunch of info to detection results
             if autograd.is_recording():
-                # all_preds = [p.reshape((0, -1, 0)) for p in [objness, ctrs, raw_box_scales, class_pred, bbox]]
                 objness = objness.reshape((0, -1, 1))
                 ctrs = ctrs.reshape((0, -1, 2))
-                raw_box_scales = ctrs.reshape((0, -1, 2))
+                raw_box_scales = raw_box_scales.reshape((0, -1, 2))
                 class_pred = class_pred.reshape((0, -3, -1))
                 bbox = bbox.reshape((0, -1, 4))
-                # all_preds = [objness, ctrs, raw_box_scales, class_pred, bbox]
                 loss_list = self._loss(objness, ctrs, raw_box_scales, class_pred, bbox, *args)
                 return loss_list, self._loss.order_sig_config
             else:
@@ -266,12 +254,7 @@ class YOLOV3(gluon.HybridBlock):
         self._ignore_iou_thresh = ignore_iou_thresh
         self._strides = strides[::-1]
         self._loss_stride = None
-        # if pos_iou_thresh >= 1:
-        #     self._target_generator = YOLOV3TargetMerger(len(classes), ignore_iou_thresh)
-        # else:
-        #     raise NotImplementedError(
-        #         "pos_iou_thresh({}) < 1.0 is not implemented!".format(pos_iou_thresh))
-        # self._loss = SelfLoss(self._num_class, self._ignore_iou_thresh, self._coop_configs[::-1])
+
         with self.name_scope():
             self.stages = nn.HybridSequential()
             self.transitions = nn.HybridSequential()
@@ -360,9 +343,6 @@ class YOLOV3(gluon.HybridBlock):
                         loss[loss_index] = loss_list[ii*3] + loss[loss_index]
                         loss[loss_index + 1] = loss_list[ii*3 + 1] + loss[loss_index + 1]
                         loss[loss_index + 2] = loss_list[ii*3 + 2] + loss[loss_index + 2]
-                        # loss['obj_sig{}'.format(sig_level)].append(loss_list.pop(0))
-                        # loss['xy_sig{}'.format(sig_level)].append(loss_list.pop(0))
-                        # loss['wh_sig{}'.format(sig_level)].append(loss_list.pop(0))
                     loss[-1] = loss_list[-1] + loss[-1]
                 else:
                     anchors, offsets = output(tip)
@@ -387,10 +367,6 @@ class YOLOV3(gluon.HybridBlock):
         if autograd.is_training():
             # during training, the network behaves differently since we don't need detection results
             if autograd.is_recording():
-                # generate losses and return them directly
-                # for key, item in loss.items():
-                #     loss[key] = sum(item)
-                # return [loss[l] for l in loss]
                 return loss
 
             # this is only used in DataLoader transform function.
