@@ -91,7 +91,11 @@ def parse_args():
     parser.add_argument('--no-mixup-epochs', type=int, default=20,
                         help='Disable mixup training if enabled in the last N epochs.')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
-    parser.add_argument('--coop-cfg', type=str, default='2, 2, 2', help='coop configs.')
+    parser.add_argument('--coop-cfg', type=str, default='2, 2, 2',
+                        help='coop configs. "," separate different output head, '
+                             '" " separate different sig level in a same output layer. '
+                             'such as 1,2 3 4,1 2 3')
+    parser.add_argument('--results_dir', default='result_test', help='path to save results')
     args = parser.parse_args()
     return args
 
@@ -108,7 +112,7 @@ def get_dataset(dataset, args):
         train_dataset = gdata.COCODetection(root=root, splits='instances_train2017', use_crowd=False)
         val_dataset = gdata.COCODetection(root=root, splits='instances_val2017', skip_empty=False)
         val_metric = COCODetectionMetric(
-            val_dataset, args.save_prefix + '_eval', cleanup=True,
+            val_dataset, os.path.join(args.results_dir, args.save_prefix + '_eval'), cleanup=True,
             data_shape=(args.data_shape, args.data_shape))
     else:
         raise NotImplementedError('Dataset: {} not implemented.'.format(dataset))
@@ -141,15 +145,15 @@ def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_
     return train_loader, val_loader
 
 
-def save_params(net, best_map, current_map, epoch, save_interval, prefix):
+def save_params(net, best_map, current_map, epoch, save_interval, prefix, result_dir):
     current_map = float(current_map)
     if current_map > best_map[0]:
         best_map[0] = current_map
-        net.save_parameters('{:s}_best.params'.format(prefix, epoch, current_map))
-        with open(prefix + '_best_map.log', 'a') as f:
+        net.save_parameters(os.path.join(result_dir, '{:s}_best.params'.format(prefix, epoch, current_map)))
+        with open(os.path.join(result_dir, prefix + '_best_map.log'), 'a') as f:
             f.write('{:04d}:\t{:.4f}\n'.format(epoch, current_map))
     if save_interval and epoch % save_interval == 0:
-        net.save_parameters('{:s}_{:04d}_{:.4f}.params'.format(prefix, epoch, current_map))
+        net.save_parameters(os.path.join(result_dir, '{:s}_{:04d}_{:.4f}.params'.format(prefix, epoch, current_map)))
 
 
 def validate(net, val_data, ctx, eval_metric):
@@ -191,8 +195,6 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
     if args.no_wd:
         for k, v in net.collect_params('.*beta|.*gamma|.*bias').items():
             v.wd_mult = 0.0
-    # if args.label_smooth:
-    #     net._loss._label_smooth = True
     if args.lr_decay_period > 0:
         lr_decay_epoch = list(range(args.lr_decay_period, args.epochs, args.lr_decay_period))
     else:
@@ -209,9 +211,6 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.collect_params(), 'sgd',
         {'wd': args.wd, 'momentum': args.momentum, 'lr_scheduler': lr_scheduler},
         kvstore='local')
-    # targets
-    # sigmoid_ce = gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
-    # l1_loss = gluon.loss.L1Loss()
 
     # TODO get coop_configs
     # metrics
@@ -228,10 +227,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     log_file_path = args.save_prefix + '_train.log'
-    log_dir = os.path.dirname(log_file_path)
-    if log_dir and not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    fh = logging.FileHandler(log_file_path)
+    fh = logging.FileHandler(os.path.join(args.results_dir, log_file_path))
     logger.addHandler(fh)
     logger.info(args)
     logger.info('Start training from [Epoch {}]'.format(args.start_epoch))
@@ -253,51 +249,30 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         btic = time.time()
         mx.nd.waitall()
         net.hybridize()
-        # test = 0
+        test = 0
         for i, batch in enumerate(train_data):
-            # test += 1
-            # if test > 400:
-            #     break
+            test += 1
+            if test > 400:
+                break
             batch_size = batch[0].shape[0]
             # hXw = batch[0].shape[2] * batch[0].shape[3]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
-            # objectness, center_targets, scale_targets, weights, class_targets
+            # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
             fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 7)]
             gt_boxes = gluon.utils.split_and_load(batch[7], ctx_list=ctx, batch_axis=0)
             sum_losses = []
-            # obj_losses = []
-            # center_losses = []
-            # scale_losses = []
-            # cls_losses = []
             metric_loss.initial()
             with autograd.record():
                 for ix, x in enumerate(data):
-                    # obj_loss, center_loss, scale_loss, cls_loss
-                    # net.reset_stride(hXw)
                     loss_list = net(x, gt_boxes[ix], *[ft[ix] for ft in fixed_targets])
                     sum_losses.append(sum([l for l in loss_list]))
-                    # sum_losses.append(obj_loss + center_loss + scale_loss + cls_loss)
-                    # obj_losses.append(obj_loss)
-                    # center_losses.append(center_loss)
-                    # scale_losses.append(scale_loss)
-                    # cls_losses.append(cls_loss)
                     metric_loss.append(loss_list)
                 autograd.backward(sum_losses)
             lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
-            # obj_metrics.update(0, obj_losses)
-            # center_metrics.update(0, center_losses)
-            # scale_metrics.update(0, scale_losses)
-            # cls_metrics.update(0, cls_losses)
             metric_loss.update()
             if args.log_interval and not (i + 1) % args.log_interval:
                 name_loss_str, name_loss = metric_loss.get()
-                # logger.info(
-                #     '[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec, {}={:.3f},
-                #     {}={:.3f}, {}={:.3f}, {}={:.3f}'.format(
-                #         epoch, i, trainer.learning_rate, batch_size / (time.time() - btic),
-                #         name1, loss1, name2, loss2,
-                #         name3, loss3, name4, loss4))
                 logger.info(('[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec' + name_loss_str).format(
                         epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), *name_loss))
             btic = time.time()
@@ -312,11 +287,13 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
             current_map = float(mean_ap[-1])
         else:
             current_map = 0.
-        save_params(net, best_map, current_map, epoch, args.save_interval, args.save_prefix)
+        save_params(net, best_map, current_map, epoch, args.save_interval, args.save_prefix, args.results_dir)
 
 
 if __name__ == '__main__':
     args = parse_args()
+    if not os.path.exists(args.results_dir):
+        os.makedirs(args.results_dir)
     # fix seed for mxnet, numpy and python builtin random generator.
     gutils.random.seed(args.seed)
 
@@ -328,7 +305,7 @@ if __name__ == '__main__':
 
     # network
     net_name = '_'.join(('yolo3', args.network, args.dataset))
-    args.save_prefix += net_name
+    # args.save_prefix += net_name
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained_base=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
