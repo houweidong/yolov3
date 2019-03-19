@@ -336,7 +336,7 @@ class YOLOV3(gluon.HybridBlock):
                 if autograd.is_recording():
                     loss_list, coop_config = output(tip, *args)
                     for ii, sig_level in enumerate(coop_config):
-                        loss_index = self._order_sig_config.index(sig_level)
+                        loss_index = self._order_sig_config.index(sig_level) * 3
                         loss[loss_index] = loss_list[ii*3] + loss[loss_index]
                         loss[loss_index + 1] = loss_list[ii*3 + 1] + loss[loss_index + 1]
                         loss[loss_index + 2] = loss_list[ii*3 + 2] + loss[loss_index + 2]

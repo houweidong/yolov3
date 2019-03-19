@@ -12,7 +12,7 @@ from mxnet import autograd
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
 # from gluoncv.model_zoo import get_model
-from model.get_model import get_model
+from get_model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
 # from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
@@ -91,7 +91,7 @@ def parse_args():
     parser.add_argument('--no-mixup-epochs', type=int, default=20,
                         help='Disable mixup training if enabled in the last N epochs.')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
-    parser.add_argument('--coop-cfg', type=str, default='1, 1, 1', help='coop configs.')
+    parser.add_argument('--coop-cfg', type=str, default='2, 2, 2', help='coop configs.')
     args = parser.parse_args()
     return args
 
