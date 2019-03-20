@@ -12,7 +12,7 @@ from mxnet import autograd
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
 # from gluoncv.model_zoo import get_model
-from get_model import get_model
+from model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
 # from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
@@ -21,7 +21,7 @@ from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
 from utils import get_order_config, LossMetric, get_coop_config
-from self_target import SelfDefaultTrainTransform
+from target import SelfDefaultTrainTransform
 
 
 def parse_args():

@@ -2,7 +2,7 @@ from mxnet import gluon
 # from mxnet import nd
 from mxnet import autograd
 from mxnet.gluon.loss import Loss
-from self_target import SelfDynamicTargetGeneratorSimple
+from target import SelfDynamicTargetGeneratorSimple
 
 
 class SelfLoss(Loss):
