@@ -32,7 +32,7 @@ class SelfLoss(Loss):
         self.order_sig_config = sorted(set(coop_configs))
 
     def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, gt_boxes,
-                       objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask):
+                       objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index):
         """Compute YOLOv3 losses.
 
         Parameters
@@ -61,8 +61,8 @@ class SelfLoss(Loss):
             range (0, 1000), include xywho level information
         obj_mask : mxnet.nd.NDArray
             range (0, 100), include xywho level information
-        objectness_cls : mxnet.nd.NDArray
-            range (0, 1)
+        box_index : mxnet.nd.NDArray
+            range (0, n), indicate the grid belongs to which ground truth box in gt_boxes
         Returns
         -------
         tuple of NDArrays
@@ -79,31 +79,37 @@ class SelfLoss(Loss):
             loss.append(0.)
             loss.append(0.)
         loss.append(0.)
-        dynamic_objness = self._dynamic_target(box_preds, gt_boxes)
-        if len(self._coop_configs) == 1:
-            dynamic_objness, objness, box_centers, box_scales = \
-                [[dynamic_objness], [objness], [box_centers], [box_scales]]
-        else:
-            dynamic_objness, objness = \
-                [[pp.reshape((0, -1, 1)) for pp in p.reshape((0, -1, len(self._coop_configs), 1)).split(
-                    num_outputs=len(self._coop_configs), axis=2)] for p in[dynamic_objness, objness]]
-            box_centers, box_scales = \
-                [[pp.reshape((0, -1, 2)) for pp in p.reshape((0, -1, len(self._coop_configs), 2)).split(
-                    num_outputs=len(self._coop_configs), axis=2)] for p in [box_centers, box_scales]]
+        ious_max, dynamic_objness = self._dynamic_target(box_preds, gt_boxes)
+        # if len(self._coop_configs) == 1:
+        #     ious_max, dynamic_objness, objness, box_centers, box_scales = \
+        #         [[ious_max], [dynamic_objness], [objness], [box_centers], [box_scales]]
+        # else:
+        #     box_centers, box_scales = \
+        #         [[pp.reshape((0, -1, 2)) for pp in p.reshape((0, -1, len(self._coop_configs), 2)).split(
+        #             num_outputs=len(self._coop_configs), axis=2)] for p in [box_centers, box_scales]]
+        ious_max, dynamic_objness, objness, box_centers, box_scales = \
+            [[pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
+                num_outputs=len(self._coop_configs), axis=2)] for p in
+             [ious_max, dynamic_objness, objness, box_centers, box_scales]]
 
-        objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask = \
+        objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index = \
             [F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1) for p in
-             [objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask]]
+             [objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index]]
 
         # the coop_config is ordered in main, but one value can appear more than one time,
         # so when current level value is same as the previous', the index will not increment
         level_old, level_index = 0, -3
-        denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
         for index_xywho in range(len(self._coop_configs)):
             with autograd.pause():
                 level = self._coop_configs[index_xywho]
+                # 1 / (level ** 2) is the factor for different sig level
+                denorm = (1 / (level ** 2)) * F.cast(
+                    F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
                 mask = obj_mask <= level
-                obj = F.where(mask, objness_t, dynamic_objness[index_xywho])
+                objness_t_fit = F.choose_element_0index(
+                    ious_max[index_xywho], index=box_index[index_xywho].squeeze(axis=-1), axis=-1, keepdims=True)
+                objness_t_fit = F.where(box_index[index_xywho] >= 0, objness_t_fit, objness_t)
+                obj = F.where(mask, objness_t_fit, dynamic_objness[index_xywho])
                 mask2 = mask.tile(reps=(2,))
                 # + 0.5 level to transform the range(-0.5*level, 0.5*level) to range(0, level)
                 ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
@@ -117,7 +123,8 @@ class SelfLoss(Loss):
                 hard_objness_t = F.where(obj > 0, F.ones_like(obj), obj)
                 new_objness_mask = F.where(obj > 0, obj, obj >= 0)
             obj_loss = F.broadcast_mul(self._sigmoid_ce(objness[index_xywho], hard_objness_t, new_objness_mask), denorm)
-            center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers[index_xywho], ctr, weight), denorm * 2)
+            # level ** 0.3 for incrementing the loss for high sigmoid level
+            center_loss = (level ** 0.3) * F.broadcast_mul(self._sigmoid_ce(box_centers[index_xywho], ctr, weight), denorm * 2)
             scale_loss = F.broadcast_mul(self._l1_loss(box_scales[index_xywho], scl, weight), denorm * 2)
             if level != level_old:
                 level_index += 3
@@ -132,7 +139,7 @@ class SelfLoss(Loss):
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
                 cls = F.where(cls > 0.5, cls - smooth_weight, F.ones_like(cls) * smooth_weight)
-            denorm_class = F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
+            denorm_class = (1 / (max(self._coop_configs) ** 2)) * F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
             class_mask = F.broadcast_mul(mask4, objness_t)
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
         loss[-1] = cls_loss + loss[-1]

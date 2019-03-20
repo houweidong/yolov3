@@ -60,6 +60,16 @@ class SelfDefaultTrainTransform(object):
         self._target_generator = SelfPrefetchTargetGenerator(
             num_class=len(net.classes), **kwargs)
 
+    def set_prob_fit(self, prob_fit=False):
+        """Set mixup random sampler, use None to disable.
+
+        Parameters
+        ----------
+        prob_fit : to make probability fit with the predicted boxes
+
+        """
+        self._target_generator.set_prob_fit(prob_fit=prob_fit)
+
     def __call__(self, src, label):
         """Apply transform to training image/label."""
         # random color jittering
@@ -103,11 +113,11 @@ class SelfDefaultTrainTransform(object):
             gt_mixratio = mx.nd.array(bbox[np.newaxis, :, -1:])
         else:
             gt_mixratio = None
-        objectness, center_targets, scale_targets, weights, mask_cls, mask_obj = self._target_generator(
+        objectness, center_targets, scale_targets, weights, mask_cls, mask_obj, box_index = self._target_generator(
             self._fake_x, self._feat_maps, self._anchors, self._offsets,
             gt_bboxes, gt_ids, gt_mixratio)
         return (img, objectness[0], center_targets[0], scale_targets[0], weights[0],
-                mask_cls[0], mask_obj[0], gt_bboxes[0])
+                mask_cls[0], mask_obj[0], box_index[0], gt_bboxes[0])
 
 
 class SelfPrefetchTargetGenerator(gluon.Block):
@@ -122,11 +132,22 @@ class SelfPrefetchTargetGenerator(gluon.Block):
 
     """
 
-    def __init__(self, num_class, **kwargs):
+    def __init__(self, num_class, prob_fit=False, **kwargs):
         super(SelfPrefetchTargetGenerator, self).__init__(**kwargs)
+        self._prob_fit = prob_fit
         self._num_class = num_class
         self.bbox2center = BBoxCornerToCenter(axis=-1, split=True)
         self.bbox2corner = BBoxCenterToCorner(axis=-1, split=False)
+
+    def set_prob_fit(self, prob_fit=False):
+        """Set mixup random sampler, use None to disable.
+
+        Parameters
+        ----------
+        prob_fit : to make probability fit with the predicted boxes
+
+        """
+        self._prob_fit = prob_fit
 
     def forward(self, img, xs, anchors, offsets, gt_boxes, gt_ids, gt_mixratio=None):
         """Generating training targets that do not require network predictions.
@@ -173,18 +194,8 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         orig_height = img.shape[2]
         orig_width = img.shape[3]
         with autograd.pause():
-            # outputs
-            # shape_like = all_anchors.reshape((1, -1, 2)) * all_offsets.reshape(
-            #     (-1, 1, 2)).expand_dims(0).repeat(repeats=gt_ids.shape[0], axis=0)
-            # center_targets = nd.zeros_like(shape_like)
-            # scale_targets = nd.zeros_like(center_targets)
-            # weights = nd.zeros_like(center_targets)
-            # objectness = nd.zeros_like(weights.split(axis=-1, num_outputs=2)[0])
-            # class_targets = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
-            # class_targets[:] = -1  # prefill -1 for ignores
 
             # output
-
             shape_like = all_anchors.reshape((1, -1, 2)) * all_offsets.reshape(
                 (-1, 1, 2)).expand_dims(0).repeat(repeats=gt_ids.shape[0], axis=0)
             center_targets = nd.zeros_like(shape_like)
@@ -193,12 +204,9 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             objectness = nd.zeros_like(weights.split(axis=-1, num_outputs=2)[0])
             mask_obj = nd.ones_like(objectness) * 1000
             distance = nd.ones_like(objectness) * 1000
-            # class_targets = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
-            # class_targets[:] = 1000  # prefill 1000 for ignores
             mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
             mask_cls[:] = 1000  # prefill 1000 for ignores
-            # distance_class = nd.ones_like(mask_cls) * 1000
-            # objectness_cls = nd.ones_like(mask_cls)
+            box_index = nd.ones_like(objectness) * -1
 
             # for each ground-truth, find the best matching anchor within the particular grid
             # for instance, center of object 1 reside in grid (3, 4) in (16, 16) feature map
@@ -241,22 +249,6 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     distance_max = nd.array(nd.maximum(distance_x, distance_y))
                     seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
 
-                    #         index = _offsets[nlayer] + loc_y * width + loc_x
-                    #         center_targets[b, index, match, 0] = gtx / orig_width * width - loc_x  # tx
-                    #         center_targets[b, index, match, 1] = gty / orig_height * height - loc_y  # ty
-                    #         scale_targets[b, index, match, 0] = np.log(gtw / np_anchors[match, 0])
-                    #         scale_targets[b, index, match, 1] = np.log(gth / np_anchors[match, 1])
-                    #         weights[b, index, match, :] = 2.0 - gtw * gth / orig_width / orig_height
-                    #         objectness[b, index, match, 0] = (
-                    #             np_gt_mixratios[b, m, 0] if np_gt_mixratios is not None else 1)
-                    #         class_targets[b, index, match, :] = 0
-                    #         class_targets[b, index, match, int(np_gt_ids[b, m, 0])] = 1
-                    # # since some stages won't see partial anchors, so we have to slice the correct targets
-                    # objectness = self._slice(objectness, num_anchors, num_offsets)
-                    # center_targets = self._slice(center_targets, num_anchors, num_offsets)
-                    # scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
-                    # weights = self._slice(weights, num_anchors, num_offsets)
-                    # class_targets = self._slice(class_targets, num_anchors, num_offsets)
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
                     cond = distance_max < distance[b, index, match, 0]
                     tx = loc_x_point - grid_x
@@ -280,17 +272,19 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         nd.where(cond_class, nd.ones_like(cond_class) * 1000, mask_cls[b, index, match, :])
                     mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
                         nd.where(cond, seal, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+
+                    if self._prob_fit:
+                        box_index[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * m, box_index[b, index, match, 0])
                     distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
                 # since some stages won't see partial anchors, so we have to slice the correct targets
                 objectness = self._slice(objectness, num_anchors, num_offsets)
                 center_targets = self._slice(center_targets, num_anchors, num_offsets)
                 scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
                 weights = self._slice(weights, num_anchors, num_offsets)
-                # class_targets = self._slice(class_targets, num_anchors, num_offsets)
                 mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
-                # objectness_cls = self._slice(objectness_cls, num_anchors, num_offsets)
                 mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
-        return objectness, center_targets, scale_targets, weights, mask_cls, mask_obj  # , objectness_cls
+                box_index = self._slice(box_index, num_anchors, num_offsets)
+        return objectness, center_targets, scale_targets, weights, mask_cls, mask_obj, box_index
 
     def _slice(self, x, num_anchors, num_offsets):
         """since some stages won't see partial anchors, so we have to slice the correct targets"""
@@ -353,5 +347,5 @@ class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):
             batch_ious = self._batch_iou(box_preds, gt_boxes)  # (B, N, M)
             ious_max = batch_ious.max(axis=-1, keepdims=True)  # (B, N, 1)
             objness_t = (ious_max > self._ignore_iou_thresh) * -1  # use -1 for ignored
-        return objness_t
+        return F.stop_gradient(ious_max), F.stop_gradient(objness_t)
         # , center_t, scale_t, weight_t, class_t

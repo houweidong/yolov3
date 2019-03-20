@@ -90,12 +90,14 @@ def parse_args():
                         help='whether to enable mixup.')
     parser.add_argument('--no-mixup-epochs', type=int, default=20,
                         help='Disable mixup training if enabled in the last N epochs.')
+    parser.add_argument('--fit-epoch', type=int, default=-1,
+                        help='epoch at which open objectness probability fit. default -1, always close fit training')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
     parser.add_argument('--coop-cfg', type=str, default='2, 2, 2',
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
-    parser.add_argument('--results_dir', default='result_test', help='path to save results')
+    parser.add_argument('--results-dir', default='result_test', help='path to save results')
     args = parser.parse_args()
     return args
 
@@ -127,7 +129,7 @@ def get_dataset(dataset, args):
 def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_workers, args):
     """Get dataloader."""
     width, height = data_shape, data_shape
-    batchify_fn = Tuple(*([Stack() for _ in range(7)] + [Pad(axis=0, pad_val=-1) for _ in
+    batchify_fn = Tuple(*([Stack() for _ in range(8)] + [Pad(axis=0, pad_val=-1) for _ in
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(
@@ -245,20 +247,25 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
                 except AttributeError:
                     train_data._dataset._data.set_mixup(None)
 
+        # TODO: more elegant way to control fit during runtime
+        if epoch == args.fit_epoch:
+            for fns in train_data._transform_fns:
+                fns.set_prob_fit(True)
+
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            # test += 1
-            # if test > 400:
-            #     break
+            test += 1
+            if test > 400:
+                break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
-            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 7)]
-            gt_boxes = gluon.utils.split_and_load(batch[7], ctx_list=ctx, batch_axis=0)
+            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 8)]
+            gt_boxes = gluon.utils.split_and_load(batch[8], ctx_list=ctx, batch_axis=0)
             sum_losses = []
             metric_loss.initial()
             with autograd.record():
