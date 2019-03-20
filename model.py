@@ -51,7 +51,7 @@ class YOLOOutputV3(gluon.HybridBlock):
             all_pred = self._num_pred * self._num_anchors
             self.prediction = nn.Conv2D(all_pred, kernel_size=1, padding=0, strides=1)
             # anchors will be multiplied to predictions
-            anchors = anchors.reshape(1, 1, -1, 1, 2)
+            anchors = anchors.reshape((1, 1, -1, 1, 2))
             self.anchors = self.params.get_constant('anchor_%d' % (index), anchors)
             # offsets will be added to predictions
             grid_x = np.arange(alloc_size[1])

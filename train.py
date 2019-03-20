@@ -248,7 +248,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
                     train_data._dataset._data.set_mixup(None)
 
         # TODO: more elegant way to control fit during runtime
-        if epoch == args.fit_epoch:
+        if (args.fit_epoch > 0) and (epoch >= args.fit_epoch):
             for fns in train_data._transform_fns:
                 fns.set_prob_fit(True)
 
@@ -258,9 +258,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            test += 1
-            if test > 400:
-                break
+            # test += 1
+            # if test > 400:
+            #     break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
