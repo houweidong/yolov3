@@ -1,6 +1,7 @@
 import mxnet as mx
 from math import pi, cos
 from mxnet import lr_scheduler
+from mxnet import nd
 
 
 def get_order_config(coop_configs):
@@ -21,6 +22,33 @@ def get_coop_config(coop_configs_str):
     for config in configs:
         coop_configs.append(tuple(sorted(map(int, filter(None, config.split(' '))))))
     return tuple(coop_configs)
+
+
+def self_box_nms(data, overlap_thresh=0.45, valid_thresh=0.01, topk=400, mode='OR'):
+    """
+    Removes detections with lower object confidence score than 'overlap_thresh'
+    Different class bboxes without interference
+
+    Parameters
+    ----------
+    data : NDArray
+        The input with shape (ids, scores, boxes), and the boxes is in corner mode
+    overlap_thresh : float, optional, default=0.5
+        Overlapping(IoU) threshold to suppress object with smaller score.
+    valid_thresh : float, optional, default=0
+        Filter input boxes to those whose scores greater than valid_thresh.
+    topk : int, optional, default='-1'
+        Apply nms to topk boxes with descending scores, -1 to no restriction.
+    mode : nms mode
+        'OR' (default), 'AND', 'MERGE' (experimental)
+
+    Returns
+    -------
+    out : NDArray or list of NDArrays
+        The output with shape (ids, scores, boxes), and the boxes is in corner mode
+    """
+    for i in range(data.shape[0]):
+        nd.pick()
 
 
 class LossMetric:
@@ -175,3 +203,5 @@ class LRScheduler(lr_scheduler.LRScheduler):
                     (1 + cos(pi * (T - self.warmup_N) / (self.N - self.warmup_N))) / 2
             else:
                 raise NotImplementedError
+
+

@@ -129,6 +129,12 @@ class SelfPrefetchTargetGenerator(gluon.Block):
     ----------
     num_class : int
         Number of foreground classes.
+    prob_fit : bool
+        Whether git the probability of box with iou between gt and the predicted boxes.
+    coop_mode : string
+        "flat", different level grids have same weight loss in the training phase
+        "convex", the center grids have higher weight than the marginal grids in the training phase
+        "concave", the marginal grids have higher weight than the center grids in the training phase
 
     """
 
@@ -276,14 +282,14 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     if self._prob_fit:
                         box_index[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * m, box_index[b, index, match, 0])
                     distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
-                # since some stages won't see partial anchors, so we have to slice the correct targets
-                objectness = self._slice(objectness, num_anchors, num_offsets)
-                center_targets = self._slice(center_targets, num_anchors, num_offsets)
-                scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
-                weights = self._slice(weights, num_anchors, num_offsets)
-                mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
-                mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
-                box_index = self._slice(box_index, num_anchors, num_offsets)
+            # since some stages won't see partial anchors, so we have to slice the correct targets
+            objectness = self._slice(objectness, num_anchors, num_offsets)
+            center_targets = self._slice(center_targets, num_anchors, num_offsets)
+            scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
+            weights = self._slice(weights, num_anchors, num_offsets)
+            mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
+            mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
+            box_index = self._slice(box_index, num_anchors, num_offsets)
         return objectness, center_targets, scale_targets, weights, mask_cls, mask_obj, box_index
 
     def _slice(self, x, num_anchors, num_offsets):
@@ -336,16 +342,54 @@ class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):
         Returns
         -------
         (tuple of) mxnet.nd.NDArray
+            batch_ious: iou between current output layer with the gt boxes.
             objectness: 0 for negative, 1 for positive, -1 for ignore.
-            center_targets: regression target for center x and y.
-            scale_targets: regression target for scale x and y.
-            weights: element-wise gradient weights for center_targets and scale_targets.
-            class_targets: a one-hot vector for classification.
 
         """
         with autograd.pause():
             batch_ious = self._batch_iou(box_preds, gt_boxes)  # (B, N, M)
             ious_max = batch_ious.max(axis=-1, keepdims=True)  # (B, N, 1)
             objness_t = (ious_max > self._ignore_iou_thresh) * -1  # use -1 for ignored
-        return F.stop_gradient(ious_max), F.stop_gradient(objness_t)
-        # , center_t, scale_t, weight_t, class_t
+        return F.stop_gradient(batch_ious), F.stop_gradient(objness_t)
+
+
+def get_factor(coop_configs, coop_mode, sigma_weight):
+    """
+    Parameters
+    ----------
+    coop_configs : tuple
+        current output layer's sigmoid configs, such as (1, 2, )
+    coop_mode : string
+        "flat", different level grids have same weight loss in the training phase
+        "convex", the center grids have higher weight than the marginal grids in the training phase
+        "concave", the marginal rids have higher weight than the center grids in the training phase
+        "equal", consider the num of the same level grids to make loss equal
+    sigma_weight : float
+        for coop_mode params, we use Gaussian distribution to generate the weights according to the grid level,
+        the sigma_weight is the distribution's params
+
+    """
+    factor_list, center_list = [], []
+    factor_max, config_max, center_max = None, 0, None
+    for config in coop_configs:
+        if coop_mode == 'flat':
+            factor_list.append(1 / (config ** 2))
+            if config > config_max:
+                config_max = config
+                factor_max = 1 / (config ** 2)
+        elif coop_mode in ['convex', 'concave']:
+            center = 1 if coop_mode == 'convex' else config
+            num_evry_grid = np.arange(1, 2*config, 2)
+            factors_gird = np.exp(-1 * np.square(np.arange(1, config + 1) - center) / (sigma_weight ** 2))
+            factor_same = 1 / ((factors_gird * num_evry_grid).sum())
+            factor_list.append(factor_same)
+            center_list.append(center)
+            if config > config_max:
+                config_max = config
+                factor_max = factor_same
+                center_max = center
+        else:
+            factor_list.append(1 / 5)
+            factor_max = 1 / 5
+    return factor_list, center_list, factor_max, center_max
+

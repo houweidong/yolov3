@@ -11,7 +11,7 @@ from mxnet import gluon
 from mxnet import autograd
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
-# from gluoncv.model_zoo import get_model
+from gluoncv.model_zoo import get_model
 from model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
 # from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
@@ -20,7 +20,7 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
-from utils import get_order_config, LossMetric, get_coop_config
+from utils import get_order_config, LossMetric, get_coop_config, self_box_nms
 from target import SelfDefaultTrainTransform
 
 
@@ -97,6 +97,13 @@ def parse_args():
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
+    parser.add_argument('--coop-mode', type=str, default='convex', choices=['flat', 'convex', 'concave', 'equal'],
+                        help='flat: different level grids have same weight loss in the training phase.'
+                             'convex: center grids have higher weight than the marginal grids in the training phase.'
+                             'concave: marginal grids have higher weight than the center grids in the training phase.'
+                             'equal: consider the num of the same level grids to make loss equal')
+    parser.add_argument('--sigma-weight', type=float, default=1.6,
+                        help='when the coop_mode is convex or concave, they need a Gaussian sigma')
     parser.add_argument('--results-dir', default='result_test', help='path to save results')
     args = parser.parse_args()
     return args
@@ -158,7 +165,7 @@ def save_params(net, best_map, current_map, epoch, save_interval, prefix, result
         net.save_parameters(os.path.join(result_dir, '{:s}_{:04d}_{:.4f}.params'.format(prefix, epoch, current_map)))
 
 
-def validate(net, val_data, ctx, eval_metric):
+def validate(net, val_data, ctx, eval_metric, nms_mode='Default'):
     """Test on validation dataset."""
     eval_metric.reset()
     # set nms threshold and topk constraint
@@ -176,7 +183,13 @@ def validate(net, val_data, ctx, eval_metric):
         gt_difficults = []
         for x, y in zip(data, label):
             # get prediction results
-            ids, scores, bboxes = net(x)
+            # to deal with the self nms and the default nms separately
+            if nms_mode == 'Default':
+                ids, scores, bboxes = net(x)
+            else:
+                results = net(x)
+                ids, scores, bboxes = self_box_nms(
+                    results, overlap_thresh=0.45, valid_thresh=0.01, topk=400, mode=nms_mode)
             det_ids.append(ids)
             det_scores.append(scores)
             # clip to image size
@@ -258,9 +271,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            # test += 1
-            # if test > 400:
-            #     break
+            test += 1
+            if test > 400:
+                break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
@@ -315,10 +328,12 @@ if __name__ == '__main__':
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained_base=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth)
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
+                        label_smooth=args.label_smooth, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
-        net = get_model(net_name, pretrained_base=True, coop_configs=coop_configs, label_smooth=args.label_smooth)
+        net = get_model(net_name, pretrained_base=True, coop_configs=coop_configs, label_smooth=args.label_smooth,
+                        coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())
