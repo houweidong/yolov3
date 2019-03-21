@@ -97,7 +97,7 @@ def parse_args():
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
-    parser.add_argument('--coop-mode', type=str, default='convex', choices=['flat', 'convex', 'concave', 'equal'],
+    parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
                              'concave: marginal grids have higher weight than the center grids in the training phase.'
