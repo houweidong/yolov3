@@ -72,7 +72,7 @@ def parse_args():
                         help='Saving parameter prefix')
     parser.add_argument('--save-interval', type=int, default=10,
                         help='Saving parameters epoch interval, best model will always be saved.')
-    parser.add_argument('--val-interval', type=int, default=1,
+    parser.add_argument('--val-interval', type=int, default=5,
                         help='Epoch interval for validation, increase the number will reduce the '
                              'training time if validation is slow.')
     parser.add_argument('--seed', type=int, default=233,
@@ -271,9 +271,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            test += 1
-            if test > 400:
-                break
+            # test += 1
+            # if test > 400:
+            #     break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
@@ -298,7 +298,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
 
         name_loss_str, name_loss = metric_loss.get()
         logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), *name_loss))
-        if not (epoch + 1) % args.val_interval:
+        if not epoch % args.val_interval:
             # consider reduce the frequency of validation to save time
             map_name, mean_ap = validate(net, val_data, ctx, eval_metric)
             val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
