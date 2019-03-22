@@ -108,10 +108,14 @@ class SelfLoss(Loss):
         #     box_centers, box_scales = \
         #         [[pp.reshape((0, -1, 2)) for pp in p.reshape((0, -1, len(self._coop_configs), 2)).split(
         #             num_outputs=len(self._coop_configs), axis=2)] for p in [box_centers, box_scales]]
-        batch_ious, dynamic_objness, objness, box_centers, box_scales = \
-            [[pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
-                num_outputs=len(self._coop_configs), axis=2)] for p in
-             [batch_ious, dynamic_objness, objness, box_centers, box_scales]]
+        if len(self._coop_configs) != 1:
+            batch_ious, dynamic_objness, objness, box_centers, box_scales = \
+                [[pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
+                    num_outputs=len(self._coop_configs), axis=2)] for p in
+                 [batch_ious, dynamic_objness, objness, box_centers, box_scales]]
+        else:
+            batch_ious, dynamic_objness, objness, box_centers, box_scales = \
+                [batch_ious], [dynamic_objness], [objness], [box_centers], [box_scales]
 
         objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index = \
             [F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1) for p in
@@ -122,7 +126,6 @@ class SelfLoss(Loss):
         level_old, level_index = 0, -3
         for index_xywho, level in enumerate(self._coop_configs):
             with autograd.pause():
-                # 1 / (level ** 2) is the factor for different sigmoid level
                 denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
                 mask = obj_mask <= level
 
@@ -148,13 +151,12 @@ class SelfLoss(Loss):
 
                 weight = F.broadcast_mul(wgt, obj)
                 hard_objness_t = F.where(obj > 0, F.ones_like(obj), obj)
-                hard_objness_fit = F.pick(batch_ious[index_xywho], index=box_index[index_xywho].squeeze(axis=-1), axis=-1, keepdims=True)
+                hard_objness_fit = F.pick(batch_ious[index_xywho], index=box_index.squeeze(axis=-1), axis=-1, keepdims=True)
                 # recover hard_objness_t with iou, if box_index has been valued with the box id
-                hard_objness_t = F.where(F.where(mask, box_index[index_xywho], F.ones_like(mask) * -1) == -1,
-                                         hard_objness_t, hard_objness_fit)
+                hard_objness_t = F.where(F.where(mask, box_index, -F.ones_like(mask)) == -1, hard_objness_t, hard_objness_fit)
                 new_objness_mask = F.where(obj > 0, obj, obj >= 0)
             obj_loss = F.broadcast_mul(self._sigmoid_ce(objness[index_xywho], hard_objness_t, new_objness_mask), denorm)
-            # level ** 0.3 for incrementing the loss for high sigmoid level
+            # level ** 0.5 for incrementing the loss for high sigmoid level
             center_loss = (level ** 0.5) * F.broadcast_mul(self._sigmoid_ce(box_centers[index_xywho], ctr, weight), denorm * 2)
             scale_loss = F.broadcast_mul(self._l1_loss(box_scales[index_xywho], scl, weight), denorm * 2)
             if level != level_old:
