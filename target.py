@@ -389,7 +389,9 @@ def get_factor(coop_configs, coop_mode, sigma_weight):
                 factor_max = factor_same
                 center_max = center
         else:
-            factor_list.append(1 / 5)
-            factor_max = 1 / 5
+            factor_list.append(1 / config)
+            if config > config_max:
+                config_max = config
+                factor_max = 1 / config
     return factor_list, center_list, factor_max, center_max
 

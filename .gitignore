@@ -1,5 +1,5 @@
 .idea/*
-mytest.py
+.mytest.py
 venv/*
 **.params
 **.log
@@ -7,4 +7,3 @@ venv/*
 **/__pycache__
 **/__init__.py
 result**/
-
