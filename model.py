@@ -248,8 +248,8 @@ class YOLOV3(gluon.HybridBlock):
         for :class:`mxnet.gluon.contrib.nn.SyncBatchNorm`.
     nms_mode : string
         "Default" : default nms
-        "Merge" : Merge all boxes between which iou larger than ignore_iou_thresh according to the probability
         "Exclude" : Exclude the boxes has no iou with other boxes larger than the ignore_iou_thresh
+        "Merge" : Merge all boxes between which iou larger than ignore_iou_thresh according to the probability
     coop_mode : string
         "flat", different level grids have same weight loss in the training phase
         "convex", the center grids have higher weight than the marginal grids in the training phase
@@ -502,10 +502,10 @@ class YOLOV3(gluon.HybridBlock):
 
 def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs,
                dataset, pretrained=False, ctx=mx.cpu(), root=os.path.join('~', '.mxnet', 'models'),
-               label_smooth=True, coop_mode='flat', sigma_weight=1.6, **kwargs):
+               nms_mode='Default', label_smooth=True, coop_mode='flat', sigma_weight=1.6, **kwargs):
     net = YOLOV3(stages, filters, anchors, strides,
                  classes=classes, coop_configs=coop_configs, label_smooth=label_smooth,
-                 coop_mode=coop_mode, sigma_weight=sigma_weight, **kwargs)
+                 nms_mode=nms_mode, coop_mode=coop_mode, sigma_weight=sigma_weight, **kwargs)
     if pretrained:
         from gluoncv.model_zoo.model_store import get_model_file
         full_name = '_'.join(('yolo3', name, dataset))
@@ -514,7 +514,7 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs,
 
 
 def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=BatchNorm, norm_kwargs=None,
-                         coop_configs=((1,), (1,), (1,)), label_smooth=True,
+                         coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default',
                          coop_mode='flat', sigma_weight=1.6, **kwargs):
     """
     Returns
@@ -533,7 +533,7 @@ def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=Batc
     return get_yolov3(
         'darknet53', stages, [512, 256, 128], anchors, strides, classes, coop_configs, 'coco',
         pretrained=pretrained, norm_layer=norm_layer, norm_kwargs=norm_kwargs, label_smooth=label_smooth,
-        coop_mode=coop_mode, sigma_weight=sigma_weight, **kwargs)
+        nms_mode=nms_mode, coop_mode=coop_mode, sigma_weight=sigma_weight, **kwargs)
 
 
 _models = {

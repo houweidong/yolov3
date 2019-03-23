@@ -97,6 +97,7 @@ def parse_args():
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
+    parser.add_argument('--nms-mode', type=str, default='Exclude', choices=['Default', 'Exclude', 'Merge'])
     parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
@@ -165,7 +166,7 @@ def save_params(net, best_map, current_map, epoch, save_interval, prefix, result
         net.save_parameters(os.path.join(result_dir, '{:s}_{:04d}_{:.4f}.params'.format(prefix, epoch, current_map)))
 
 
-def validate(net, val_data, ctx, eval_metric, nms_mode='Default'):
+def validate(net, val_data, ctx, eval_metric, nms_mode):
     """Test on validation dataset."""
     eval_metric.reset()
     # set nms threshold and topk constraint
@@ -189,7 +190,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode='Default'):
             else:
                 results = net(x)
                 ids, scores, bboxes = self_box_nms(
-                    results, overlap_thresh=0.45, valid_thresh=0.01, topk=400, mode=nms_mode)
+                    results, overlap_thresh=0.45, valid_thresh=0.01, topk=400, nms_style=nms_mode)
             det_ids.append(ids)
             det_scores.append(scores)
             # clip to image size
@@ -227,7 +228,6 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         {'wd': args.wd, 'momentum': args.momentum, 'lr_scheduler': lr_scheduler},
         kvstore='local')
 
-    # TODO get coop_configs
     # metrics
     coop_cfg = get_coop_config(args.coop_cfg)
     metric_loss = LossMetric(get_order_config(coop_cfg))
@@ -271,9 +271,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         # net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            # test += 1
-            # if test > 400:
-            #     break
+            test += 1
+            if test > 200:
+                break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
@@ -300,7 +300,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), *name_loss))
         if not epoch % args.val_interval:
             # consider reduce the frequency of validation to save time
-            map_name, mean_ap = validate(net, val_data, ctx, eval_metric)
+            map_name, mean_ap = validate(net, val_data, ctx, eval_metric, args.nms_mode)
             val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
             logger.info('[Epoch {}] Validation: \n{}'.format(epoch, val_msg))
             current_map = float(mean_ap[-1])
@@ -328,12 +328,12 @@ if __name__ == '__main__':
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained_base=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
-                        label_smooth=args.label_smooth, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth,
+                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained_base=True, coop_configs=coop_configs, label_smooth=args.label_smooth,
-                        coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
+                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())

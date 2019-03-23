@@ -2,6 +2,8 @@ import mxnet as mx
 from math import pi, cos
 from mxnet import lr_scheduler
 from mxnet import nd
+import numpy as np
+from gluoncv.data.batchify import Pad
 
 
 def get_order_config(coop_configs):
@@ -24,7 +26,37 @@ def get_coop_config(coop_configs_str):
     return tuple(coop_configs)
 
 
-def self_box_nms(data, overlap_thresh=0.45, valid_thresh=0.01, topk=400, mode='OR'):
+def bbox_iou(box1, box2, x1y1x2y2=True):
+    """
+    Returns the IoU of two bounding boxes
+    """
+    if x1y1x2y2:
+        # Get the coordinates of bounding boxes
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+    else:
+        # Transform from center and width to exact coordinates
+        b1_x1, b1_x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
+        b1_y1, b1_y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
+        b2_x1, b2_x2 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
+        b2_y1, b2_y2 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
+
+    # get the coordinates of the intersection rectangle
+    inter_rect_x1 = np.maximum(b1_x1, b2_x1)
+    inter_rect_y1 = np.maximum(b1_y1, b2_y1)
+    inter_rect_x2 = np.minimum(b1_x2, b2_x2)
+    inter_rect_y2 = np.minimum(b1_y2, b2_y2)
+    # Intersection area
+    inter_area = np.clip(inter_rect_x2 - inter_rect_x1, a_min=0, a_max=None) * \
+                 np.clip(inter_rect_y2 - inter_rect_y1, a_min=0, a_max=None)
+    # Union Area
+    b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+    b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+
+    return inter_area / (b1_area + b2_area - inter_area + 1e-16)
+
+
+def self_box_nms(data, overlap_thresh=0.45, valid_thresh=0.01, topk=None, nms_style='Default'):
     """
     Removes detections with lower object confidence score than 'overlap_thresh'
     Different class bboxes without interference
@@ -39,16 +71,71 @@ def self_box_nms(data, overlap_thresh=0.45, valid_thresh=0.01, topk=400, mode='O
         Filter input boxes to those whose scores greater than valid_thresh.
     topk : int, optional, default='-1'
         Apply nms to topk boxes with descending scores, -1 to no restriction.
-    mode : nms mode
-        'OR' (default), 'AND', 'MERGE' (experimental)
+    nms_style : nms mode
+        'Default', 'Exclude', 'Merge'
 
     Returns
     -------
     out : NDArray or list of NDArrays
         The output with shape (ids, scores, boxes), and the boxes is in corner mode
     """
-    for i in range(data.shape[0]):
-        nd.pick()
+
+    data = data.asnumpy()
+    output = [-np.ones(shape=(1, 6)) for _ in range(len(data))]
+
+    for image_i, pred in enumerate(data):
+        # Sort the predicted boxes by maximum  confidence
+        v = (pred[:, 1] > valid_thresh).nonzero()[0]
+        pred = pred[v]
+        conf_sort_index = np.argsort(pred[:, 1])[::-1]
+        pred = pred[conf_sort_index]
+        if topk:
+            pred = pred[:topk]
+
+        # If none are remaining => process next image
+        nP = pred.shape[0]
+        if not nP:
+            continue
+
+        unique_labels = np.unique(pred[:, 0])
+        for c in unique_labels:
+            # Get the predicted boxes with class c
+            pc = pred[pred[:, 0] == c]
+            # Non-maximum suppression
+            det_max = []
+            if nms_style == 'Default':
+                while pc.shape[0]:
+                    det_max.append(pc[:1])  # save highest conf detection
+                    if len(pc) == 1:  # Stop if we're at the last detection
+                        break
+                    iou = bbox_iou(pc[:1, 2:], pc[1:, 2:])  # iou with other boxes
+                    pc = pc[1:][iou < overlap_thresh]  # remove ious > threshold
+
+            elif nms_style == 'Exclude':  # requires overlap, single boxes erased
+                while len(pc) > 1:
+                    iou = bbox_iou(pc[:1, 2:], pc[1:, 2:])  # iou with other boxes
+                    if iou.max() > 0.5:
+                        det_max.append(pc[:1])
+                    pc = pc[1:][iou < overlap_thresh]  # remove ious > threshold
+
+            elif nms_style == 'Merge':  # weighted mixture box
+                while len(pc) > 0:
+                    iou = bbox_iou(pc[:1, 2:], pc[0:, 2:])  # iou with other boxes
+                    i = iou > overlap_thresh
+
+                    weights = pc[i, 1:2]
+                    pc[0, 2:] = (weights * pc[i, 2:]).sum(0) / weights.sum()
+                    det_max.append(pc[:1])
+                    pc = pc[iou < overlap_thresh]
+
+            if len(det_max) > 0:
+                # Add max detections to outputs
+                output[image_i] = np.concatenate((output[image_i], np.concatenate(det_max)))
+    result = Pad(axis=0, pad_val=-1)(output)
+    ids = result.slice_axis(axis=-1, begin=0, end=1)
+    scores = result.slice_axis(axis=-1, begin=1, end=2)
+    bboxes = result.slice_axis(axis=-1, begin=2, end=None)
+    return ids, scores, bboxes
 
 
 class LossMetric:
@@ -203,5 +290,4 @@ class LRScheduler(lr_scheduler.LRScheduler):
                     (1 + cos(pi * (T - self.warmup_N) / (self.N - self.warmup_N))) / 2
             else:
                 raise NotImplementedError
-
 
