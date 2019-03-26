@@ -97,7 +97,7 @@ def parse_args():
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
-    parser.add_argument('--nms-mode', type=str, default='Exclude', choices=['Default', 'Exclude', 'Merge'])
+    parser.add_argument('--nms-mode', type=str, default='Default', choices=['Default', 'Exclude', 'Merge'])
     parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
@@ -271,9 +271,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            test += 1
-            if test > 200:
-                break
+            # test += 1
+            # if test > 200:
+            #     break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
