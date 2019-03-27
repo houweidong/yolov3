@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument('--start-epoch', type=int, default=0,
                         help='Starting epoch for resuming, default is 0 for new training.'
                              'You can specify it to 100 for example to start from 100 epoch.')
-    parser.add_argument('--lr', type=float, default=0.001,
+    parser.add_argument('--lr', type=float, default=0.0015,
                         help='Learning rate, default is 0.001')
     parser.add_argument('--lr-mode', type=str, default='step',
                         help='learning rate scheduler mode. options are step, poly and cosine.')
@@ -96,7 +96,7 @@ def parse_args():
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
-    parser.add_argument('--nms-mode', type=str, default='Exclude', choices=['Default', 'Exclude', 'Merge'])
+    parser.add_argument('--nms-mode', type=str, default='Default', choices=['Default', 'Exclude', 'Merge'])
     parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
