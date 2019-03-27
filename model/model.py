@@ -9,8 +9,8 @@ from mxnet.gluon import nn
 from mxnet.gluon.nn import BatchNorm
 from gluoncv.model_zoo.yolo.darknet import _conv2d, darknet53
 from gluoncv.model_zoo.yolo.yolo_target import YOLOV3TargetMerger
-from loss import SelfLoss
-from utils import get_order_config
+from model.loss import SelfLoss
+from model.utils import get_order_config
 
 from gluoncv.model_zoo.yolo.yolo3 import _upsample, YOLODetectionBlockV3
 from gluoncv.model_zoo.yolo import yolo3_darknet53_custom, yolo3_mobilenet1_0_coco, yolo3_mobilenet1_0_custom

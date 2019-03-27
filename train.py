@@ -11,8 +11,7 @@ from mxnet import gluon
 from mxnet import autograd
 from gluoncv import data as gdata
 from gluoncv import utils as gutils
-from gluoncv.model_zoo import get_model
-from model import get_model
+from model.model import get_model
 from gluoncv.data.batchify import Tuple, Stack, Pad
 # from gluoncv.data.transforms.presets.yolo import YOLO3DefaultTrainTransform
 from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
@@ -20,9 +19,9 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
-from utils import get_order_config, LossMetric, get_coop_config, self_box_nms
-from target import SelfDefaultTrainTransform
-
+from model.utils import get_order_config, LossMetric, get_coop_config, self_box_nms
+from model.target import SelfDefaultTrainTransform
+from mxnet import nd
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train YOLO networks with random input shape.')
@@ -199,7 +198,18 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
             gt_ids.append(y.slice_axis(axis=-1, begin=4, end=5))
             gt_bboxes.append(y.slice_axis(axis=-1, begin=0, end=4))
             gt_difficults.append(y.slice_axis(axis=-1, begin=5, end=6) if y.shape[-1] > 5 else None)
-
+        if nms_mode != 'Default':
+            mxim = 0
+            for det_bbox in det_bboxes:
+                if det_bbox.shape[1] > mxim:
+                    mxim = det_bbox.shape[1]
+            for ind in range(len(det_bboxes)):
+                det_bboxes[ind] = nd.pad(det_bboxes[ind], mode='constant', pad_width=(
+                    0, 0, 0, mxim-det_bboxes[ind].shape[1], 0, 0), constant_value=-1)
+                gt_ids[ind] = nd.pad(gt_ids[ind], mode='constant', pad_width=(
+                    0, 0, 0, mxim-gt_ids[ind].shape[1], 0, 0), constant_value=-1)
+                gt_bboxes[ind] = nd.pad(gt_bboxes[ind], mode='constant', pad_width=(
+                    0, 0, 0, mxim-gt_bboxes[ind].shape[1], 0, 0), constant_value=-1)
         # update metric
         eval_metric.update(det_bboxes, det_ids, det_scores, gt_bboxes, gt_ids, gt_difficults)
     return eval_metric.get()
@@ -271,9 +281,9 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            test += 1
-            if test > 200:
-                break
+            # test += 1
+            # if test > 200:
+            #     break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
