@@ -35,11 +35,11 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='coco',
                         help='Training dataset. Now support voc.')
     parser.add_argument('--num-workers', '-j', dest='num_workers', type=int,
-                        default=4, help='Number of data workers, you can use larger '
+                        default=8, help='Number of data workers, you can use larger '
                                         'number to accelerate data loading, if you CPU and GPUs are powerful.')
     parser.add_argument('--gpus', type=str, default='0',
                         help='Training with GPUs, you can specify 1,3 for example.')
-    parser.add_argument('--epochs', type=int, default=70,
+    parser.add_argument('--epochs', type=int, default=50,
                         help='Training epochs.')
     parser.add_argument('--resume', type=str, default='',
                         help='Resume from previously saved parameters if not None. '
@@ -55,7 +55,7 @@ def parse_args():
                         help='decay rate of learning rate. default is 0.1.')
     parser.add_argument('--lr-decay-period', type=int, default=0,
                         help='interval for periodic learning rate decays. default is 0 to disable.')
-    parser.add_argument('--lr-decay-epoch', type=str, default='100,130',
+    parser.add_argument('--lr-decay-epoch', type=str, default='30,40',
                         help='epochs at which learning rate decays. default is 100,130.')
     parser.add_argument('--warmup-lr', type=float, default=0.0,
                         help='starting warmup learning rate. default is 0.0.')
@@ -65,13 +65,13 @@ def parse_args():
                         help='SGD momentum, default is 0.9')
     parser.add_argument('--wd', type=float, default=0.0005,
                         help='Weight decay, default is 5e-4')
-    parser.add_argument('--log-interval', type=int, default=100,
+    parser.add_argument('--log-interval', type=int, default=200,
                         help='Logging mini-batch interval. Default is 100.')
     parser.add_argument('--save-prefix', type=str, default='',
                         help='Saving parameter prefix')
-    parser.add_argument('--save-interval', type=int, default=10,
+    parser.add_argument('--save-interval', type=int, default=5,
                         help='Saving parameters epoch interval, best model will always be saved.')
-    parser.add_argument('--val-interval', type=int, default=5,
+    parser.add_argument('--val-interval', type=int, default=2,
                         help='Epoch interval for validation, increase the number will reduce the '
                              'training time if validation is slow.')
     parser.add_argument('--seed', type=int, default=233,
@@ -87,12 +87,12 @@ def parse_args():
                         help='whether to remove weight decay on bias, and beta/gamma for batchnorm layers.')
     parser.add_argument('--mixup', action='store_true',
                         help='whether to enable mixup.')
-    parser.add_argument('--no-mixup-epochs', type=int, default=20,
+    parser.add_argument('--no-mixup-epochs', type=int, default=10,
                         help='Disable mixup training if enabled in the last N epochs.')
     parser.add_argument('--fit-epoch', type=int, default=-1,
                         help='epoch at which open objectness probability fit. default -1, always close fit training')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
-    parser.add_argument('--coop-cfg', type=str, default='2, 2, 2',
+    parser.add_argument('--coop-cfg', type=str, default='1, 1, 1',
                         help='coop configs. "," separate different output head, '
                              '" " separate different sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
