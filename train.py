@@ -23,6 +23,7 @@ from model.utils import get_order_config, LossMetric, get_coop_config, self_box_
 from model.target import SelfDefaultTrainTransform
 from mxnet import nd
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train YOLO networks with random input shape.')
     parser.add_argument('--network', type=str, default='darknet53',
@@ -30,16 +31,16 @@ def parse_args():
     parser.add_argument('--data-shape', type=int, default=416,
                         help="Input data shape for evaluation, use 320, 416, 608... " +
                              "Training is with random shapes from (320 to 608).")
-    parser.add_argument('--batch-size', type=int, default=8,
+    parser.add_argument('--batch-size', type=int, default=16,
                         help='Training mini-batch size')
     parser.add_argument('--dataset', type=str, default='coco',
                         help='Training dataset. Now support voc.')
     parser.add_argument('--num-workers', '-j', dest='num_workers', type=int,
-                        default=8, help='Number of data workers, you can use larger '
-                                        'number to accelerate data loading, if you CPU and GPUs are powerful.')
+                        default=16, help='Number of data workers, you can use larger '
+                                         'number to accelerate data loading, if you CPU and GPUs are powerful.')
     parser.add_argument('--gpus', type=str, default='0',
                         help='Training with GPUs, you can specify 1,3 for example.')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=30,
                         help='Training epochs.')
     parser.add_argument('--resume', type=str, default='',
                         help='Resume from previously saved parameters if not None. '
@@ -47,7 +48,7 @@ def parse_args():
     parser.add_argument('--start-epoch', type=int, default=0,
                         help='Starting epoch for resuming, default is 0 for new training.'
                              'You can specify it to 100 for example to start from 100 epoch.')
-    parser.add_argument('--lr', type=float, default=0.0015,
+    parser.add_argument('--lr', type=float, default=0.001,
                         help='Learning rate, default is 0.001')
     parser.add_argument('--lr-mode', type=str, default='step',
                         help='learning rate scheduler mode. options are step, poly and cosine.')
@@ -55,11 +56,11 @@ def parse_args():
                         help='decay rate of learning rate. default is 0.1.')
     parser.add_argument('--lr-decay-period', type=int, default=0,
                         help='interval for periodic learning rate decays. default is 0 to disable.')
-    parser.add_argument('--lr-decay-epoch', type=str, default='30,40',
+    parser.add_argument('--lr-decay-epoch', type=str, default='20,30',
                         help='epochs at which learning rate decays. default is 100,130.')
     parser.add_argument('--warmup-lr', type=float, default=0.0,
                         help='starting warmup learning rate. default is 0.0.')
-    parser.add_argument('--warmup-epochs', type=int, default=1,
+    parser.add_argument('--warmup-epochs', type=int, default=0,
                         help='number of warmup epochs.')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help='SGD momentum, default is 0.9')
@@ -205,11 +206,11 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
                     mxim = det_bbox.shape[1]
             for ind in range(len(det_bboxes)):
                 det_bboxes[ind] = nd.pad(det_bboxes[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim-det_bboxes[ind].shape[1], 0, 0), constant_value=-1)
+                    0, 0, 0, mxim - det_bboxes[ind].shape[1], 0, 0), constant_value=-1)
                 gt_ids[ind] = nd.pad(gt_ids[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim-gt_ids[ind].shape[1], 0, 0), constant_value=-1)
+                    0, 0, 0, mxim - gt_ids[ind].shape[1], 0, 0), constant_value=-1)
                 gt_bboxes[ind] = nd.pad(gt_bboxes[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim-gt_bboxes[ind].shape[1], 0, 0), constant_value=-1)
+                    0, 0, 0, mxim - gt_bboxes[ind].shape[1], 0, 0), constant_value=-1)
         # update metric
         eval_metric.update(det_bboxes, det_ids, det_scores, gt_bboxes, gt_ids, gt_difficults)
     return eval_metric.get()
@@ -303,7 +304,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
             if args.log_interval and not (i + 1) % args.log_interval:
                 name_loss_str, name_loss = metric_loss.get()
                 logger.info(('[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec' + name_loss_str).format(
-                        epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), *name_loss))
+                    epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), *name_loss))
             btic = time.time()
 
         name_loss_str, name_loss = metric_loss.get()
@@ -337,12 +338,13 @@ if __name__ == '__main__':
     # args.save_prefix += net_name
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
-        net = get_model(net_name, pretrained_base=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth,
+        net = get_model(net_name, pretrained=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
+                        label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
-        net = get_model(net_name, pretrained_base=True, coop_configs=coop_configs, label_smooth=args.label_smooth,
+        net = get_model(net_name, pretrained=True, coop_configs=coop_configs, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = net
     if args.resume.strip():

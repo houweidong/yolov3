@@ -164,6 +164,7 @@ class SelfLoss(Loss):
             loss[level_index] = obj_loss + loss[level_index]
             loss[level_index + 1] = center_loss + loss[level_index + 1]
             loss[level_index + 2] = scale_loss + loss[level_index + 2]
+            level_old = level
         with autograd.pause():
             mask3 = cls_mask <= max(self._coop_configs)
             mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
@@ -187,4 +188,3 @@ class SelfLoss(Loss):
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
         loss[-1] = cls_loss + loss[-1]
         return loss
-
