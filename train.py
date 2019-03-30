@@ -50,13 +50,13 @@ def parse_args():
                              'You can specify it to 100 for example to start from 100 epoch.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Learning rate, default is 0.001')
-    parser.add_argument('--lr-mode', type=str, default='step',
+    parser.add_argument('--lr-mode', type=str, default='cosine',
                         help='learning rate scheduler mode. options are step, poly and cosine.')
     parser.add_argument('--lr-decay', type=float, default=0.1,
                         help='decay rate of learning rate. default is 0.1.')
     parser.add_argument('--lr-decay-period', type=int, default=0,
                         help='interval for periodic learning rate decays. default is 0 to disable.')
-    parser.add_argument('--lr-decay-epoch', type=str, default='20,30',
+    parser.add_argument('--lr-decay-epoch', type=str, default='10,20',
                         help='epochs at which learning rate decays. default is 100,130.')
     parser.add_argument('--warmup-lr', type=float, default=0.0,
                         help='starting warmup learning rate. default is 0.0.')
@@ -172,7 +172,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
     # set nms threshold and topk constraint
     net.set_nms(nms_thresh=0.45, nms_topk=400)
     mx.nd.waitall()
-    net.hybridize()
+    # net.hybridize()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0, even_split=False)
         label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0, even_split=False)
@@ -279,7 +279,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
-        net.hybridize()
+        # net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
             # test += 1

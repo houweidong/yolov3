@@ -65,7 +65,7 @@ class YOLOOutputV3(gluon.HybridBlock):
             self.prediction = nn.Conv2D(all_pred, kernel_size=1, padding=0, strides=1)
             # anchors will be multiplied to predictions
             anchors = anchors.reshape((1, 1, -1, 1, 2))
-            self.anchors = self.params.get_constant('anchor_%d' % (index), anchors)
+            self.anchors_self = self.params.get_constant('anchor_%d' % (index), anchors)
             # offsets will be added to predictions
             grid_x = np.arange(alloc_size[1])
             grid_y = np.arange(alloc_size[0])
@@ -74,7 +74,7 @@ class YOLOOutputV3(gluon.HybridBlock):
             offsets = np.concatenate((grid_x[:, :, np.newaxis], grid_y[:, :, np.newaxis]), axis=-1)
             # expand dims to (1, 1, n, n, 2) so it's easier for broadcasting
             offsets = np.expand_dims(np.expand_dims(offsets, axis=0), axis=0)
-            self.offsets = self.params.get_constant('offset_%d' % (index), offsets)
+            self.offsets_self = self.params.get_constant('offset_%d' % (index), offsets)
             horizontal_sig_levels = np.array(coop_config)[np.newaxis, np.newaxis, np.newaxis, :, np.newaxis]
             self.horizontal_sig_levels = self.params.get_constant('sig_level_%d' % (index), horizontal_sig_levels)
 
@@ -128,7 +128,7 @@ class YOLOOutputV3(gluon.HybridBlock):
                 # set data to new conv layers
                 new_params.set_data(new_data)
 
-    def hybrid_forward(self, F, x, *args, anchors, offsets, horizontal_sig_levels):
+    def hybrid_forward(self, F, x, *args, anchors_self, offsets_self, horizontal_sig_levels):
         """Hybrid Forward of YOLOV3Output layer.
         Parameters
         ----------
@@ -162,12 +162,12 @@ class YOLOOutputV3(gluon.HybridBlock):
         objness = xywho.slice_axis(axis=-1, begin=4, end=None)
 
         # valid offsets, (1, 1, height, width, 2)
-        offsets = F.slice_like(offsets, x * 0, axes=(2, 3))
+        offsets = F.slice_like(offsets_self, x * 0, axes=(2, 3))
         # reshape to (1, height*width, 1, 2)
         offsets = F.broadcast_sub(offsets.reshape((1, -1, 1, 2)).expand_dims(-2) + 0.5, 0.5 * horizontal_sig_levels)
 
         box_centers = F.broadcast_add(F.broadcast_mul(F.sigmoid(ctrs), horizontal_sig_levels), offsets) * self._stride
-        box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors)
+        box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors_self)
         confidence = F.sigmoid(objness)
         class_score = F.broadcast_mul(F.sigmoid(class_pred).expand_dims(-2), confidence)
         wh = box_scales / 2.0
@@ -184,7 +184,7 @@ class YOLOOutputV3(gluon.HybridBlock):
                 loss_list = self._loss(objness, ctrs, raw_box_scales, class_pred, bbox, *args)
                 return loss_list, self._loss.order_sig_config
             else:
-                return anchors, offsets
+                return anchors_self, offsets
 
         # # prediction per class
         # bboxes = F.tile(bbox, reps=(self._classes, 1, 1, 1, 1))
@@ -509,7 +509,8 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs,
     if pretrained:
         from gluoncv.model_zoo.model_store import get_model_file
         full_name = '_'.join(('yolo3', name, dataset))
-        net.load_parameters(get_model_file(full_name, tag=pretrained, root=root), ctx=ctx)
+        net.load_parameters(get_model_file(full_name, tag=pretrained, root=root), ctx=ctx,
+                            allow_missing=True, ignore_extra=True)
     return net
 
 
