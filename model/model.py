@@ -58,7 +58,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         self._stride = stride
         dic = {32: slice(0, 1), 16: slice(1, 5), 8: slice(5, 21)}
         assert coop_mode in ['flat', 'convex', 'concave', 'equal']
-        self._loss = SelfLoss(self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
+        self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
                               coop_mode, sigma_weight)
         with self.name_scope():
             all_pred = self._num_pred * self._num_anchors
@@ -176,13 +176,13 @@ class YOLOOutputV3(gluon.HybridBlock):
         if autograd.is_training():
             # during training, we don't need to convert whole bunch of info to detection results
             if autograd.is_recording():
-                objness = objness.reshape((0, -1, 1))
-                ctrs = ctrs.reshape((0, -1, 2))
-                raw_box_scales = raw_box_scales.reshape((0, -1, 2))
+                objness = objness.reshape((0, -3, 0, 1))
+                ctrs = ctrs.reshape((0, -3, 0, 2))
+                raw_box_scales = raw_box_scales.reshape((0, -3, 0, 2))
                 class_pred = class_pred.reshape((0, -3, -1))
                 bbox = bbox.reshape((0, -1, 4))
-                loss_list = self._loss(objness, ctrs, raw_box_scales, class_pred, bbox, *args)
-                return loss_list, self._loss.order_sig_config
+                return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox,
+                                  horizontal_sig_levels.reshape((0, -3, -1, 1)), *args)
             else:
                 return anchors_self, offsets
 
@@ -347,12 +347,7 @@ class YOLOV3(gluon.HybridBlock):
             routes.append(x)
 
         # loss = OrderedDict()
-        loss = []
-        for _ in self._order_sig_config:
-            loss.append(0.)
-            loss.append(0.)
-            loss.append(0.)
-        loss.append(0.)
+        loss = [0., 0., 0., 0.]
 
         # the YOLO output layers are used in reverse order, i.e., from very deep layers to shallow
         for i, block, output in zip(range(len(routes)), self.yolo_blocks, self.yolo_outputs):
@@ -360,13 +355,11 @@ class YOLOV3(gluon.HybridBlock):
             if autograd.is_training():
 
                 if autograd.is_recording():
-                    loss_list, coop_config = output(tip, *args)
-                    for ii, sig_level in enumerate(coop_config):
-                        loss_index = self._order_sig_config.index(sig_level) * 3
-                        loss[loss_index] = loss_list[ii*3] + loss[loss_index]
-                        loss[loss_index + 1] = loss_list[ii*3 + 1] + loss[loss_index + 1]
-                        loss[loss_index + 2] = loss_list[ii*3 + 2] + loss[loss_index + 2]
-                    loss[-1] = loss_list[-1] + loss[-1]
+                    obj_loss, center_loss, scale_loss, cls_loss = output(tip, *args)
+                    loss[0] = loss[0] + obj_loss
+                    loss[1] = loss[1] + center_loss
+                    loss[2] = loss[2] + scale_loss
+                    loss[3] = loss[3] + cls_loss
                 else:
                     anchors, offsets = output(tip)
                     all_anchors.append(anchors)

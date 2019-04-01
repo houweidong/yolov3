@@ -19,7 +19,7 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
-from model.utils import get_order_config, LossMetric, get_coop_config, self_box_nms
+from model.utils import get_order_config, LossMetricSimple, get_coop_config, self_box_nms
 from model.target import SelfDefaultTrainTransform
 from mxnet import nd
 
@@ -106,6 +106,8 @@ def parse_args():
     parser.add_argument('--sigma-weight', type=float, default=1.6,
                         help='when the coop_mode is convex or concave, they need a Gaussian sigma')
     parser.add_argument('--results-dir', default='result_test', help='path to save results')
+    parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
+    parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
     args = parser.parse_args()
     return args
 
@@ -140,11 +142,12 @@ def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_
     batchify_fn = Tuple(*([Stack() for _ in range(8)] + [Pad(axis=0, pad_val=-1) for _ in
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
-        train_loader = gluon.data.DataLoader(
-            train_dataset.transform(SelfDefaultTrainTransform(width, height, net, mixup=args.mixup)),
-            batch_size, True, batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
+        train_loader = gluon.data.DataLoader(train_dataset.transform(SelfDefaultTrainTransform(width, height, net,
+            mixup=args.mixup, coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train)), batch_size, True,
+            batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
     else:
-        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, mixup=args.mixup) for x in range(10, 20)]
+        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, mixup=args.mixup,
+            coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train) for x in range(10, 20)]
         train_loader = RandomTransformDataLoader(
             transform_fns, train_dataset, batch_size=batch_size, interval=10, last_batch='rollover',
             shuffle=True, batchify_fn=batchify_fn, num_workers=num_workers)
@@ -172,7 +175,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
     # set nms threshold and topk constraint
     net.set_nms(nms_thresh=0.45, nms_topk=400)
     mx.nd.waitall()
-    # net.hybridize()
+    net.hybridize()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0, even_split=False)
         label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0, even_split=False)
@@ -241,7 +244,8 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
 
     # metrics
     coop_cfg = get_coop_config(args.coop_cfg)
-    metric_loss = LossMetric(get_order_config(coop_cfg))
+    # metric_loss = LossMetric(get_order_config(coop_cfg))
+    metric_loss = LossMetricSimple()
     # metrics
     # obj_metrics = mx.metric.Loss('ObjLoss')
     # center_metrics = mx.metric.Loss('BoxCenterLoss')
@@ -279,7 +283,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
-        # net.hybridize()
+        net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
             # test += 1
@@ -338,13 +342,13 @@ if __name__ == '__main__':
     # args.save_prefix += net_name
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
-        net = get_model(net_name, pretrained=True, norm_layer=gluon.contrib.nn.SyncBatchNorm,
+        net = get_model(net_name, pretrained=args.pretrained, norm_layer=gluon.contrib.nn.SyncBatchNorm,
                         norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
                         label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
-        net = get_model(net_name, pretrained=True, coop_configs=coop_configs, label_smooth=args.label_smooth,
+        net = get_model(net_name, pretrained=args.pretrained, coop_configs=coop_configs, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
         async_net = net
     if args.resume.strip():

@@ -3,7 +3,7 @@ from mxnet import gluon
 from mxnet import autograd
 from mxnet.gluon.loss import Loss
 from model.target import SelfDynamicTargetGeneratorSimple, get_factor
-
+import numpy as np
 
 class SelfLoss(Loss):
     """Losses of YOLO v3.
@@ -34,7 +34,7 @@ class SelfLoss(Loss):
 
     """
 
-    def __init__(self, num_class, ignore_iou_thresh, coop_configs, target_slice, label_smooth,
+    def __init__(self, index, num_class, ignore_iou_thresh, coop_configs, target_slice, label_smooth,
                  coop_mode, sigma_weight, batch_axis=0, weight=None, **kwargs):
         super(SelfLoss, self).__init__(weight, batch_axis, **kwargs)
         self._coop_mode = coop_mode
@@ -48,12 +48,15 @@ class SelfLoss(Loss):
         self._label_smooth = label_smooth
         self._coop_configs = coop_configs
         self.order_sig_config = sorted(set(coop_configs))
-        self._dynamic_target = SelfDynamicTargetGeneratorSimple(num_class, ignore_iou_thresh)
-        self._factor_list, self._center_list, self._factor_max, self._center_max = \
+        self._dynamic_target = SelfDynamicTargetGeneratorSimple(num_class, ignore_iou_thresh, len(coop_configs))
+        factor_list, center_list, self._factor_max, self._center_max = \
             get_factor(coop_configs, coop_mode, sigma_weight)
+        with self.name_scope():
+            factor_np = np.array(factor_list)[np.newaxis, np.newaxis, :, np.newaxis]
+            self.factor = self.params.get_constant('factor_%d' % (index), factor_np)
 
-    def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, gt_boxes,
-                       objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index):
+    def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, gt_boxes, coop, objness_t,
+                       center_t, scale_t, weight_t, cls_mask, box_index, weights_balance, factor):
         """Compute YOLOv3 losses.
 
         Parameters
@@ -84,6 +87,8 @@ class SelfLoss(Loss):
             range (0, 100), include xywho level information
         box_index : mxnet.nd.NDArray
             range (0, n), indicate the grid belongs to which ground truth box in gt_boxes
+        weights_balance : mxnet.nd.NDArray
+            to equal train every target
         Returns
         -------
         tuple of NDArrays
@@ -94,97 +99,116 @@ class SelfLoss(Loss):
 
         """
 
-        loss = []
-        for _ in self.order_sig_config:
-            loss.append(0.)
-            loss.append(0.)
-            loss.append(0.)
-        loss.append(0.)
         batch_ious, dynamic_objness = self._dynamic_target(box_preds, gt_boxes)
-        # if len(self._coop_configs) == 1:
-        #     ious_max, dynamic_objness, objness, box_centers, box_scales = \
-        #         [[ious_max], [dynamic_objness], [objness], [box_centers], [box_scales]]
+        objness_t, center_t, scale_t, weight_t, box_index = (F.tile(F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]),
+            dim=1), reps=(len(self._coop_configs), 1)) for p in [objness_t, center_t, scale_t, weight_t, box_index])
+        weights_balance, cls_mask = (F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1)
+                                     for p in [weights_balance, cls_mask])
+        # cls_mask = F.concat(*(cls_mask.split(num_outputs=21, axis=1)[self._target_slice]), dim=1)
+        # if len(self._coop_configs) != 1:
+        #     batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance = \
+        #         ([pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
+        #             num_outputs=len(self._coop_configs), axis=2)] for p in
+        #          [batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance])
         # else:
-        #     box_centers, box_scales = \
-        #         [[pp.reshape((0, -1, 2)) for pp in p.reshape((0, -1, len(self._coop_configs), 2)).split(
-        #             num_outputs=len(self._coop_configs), axis=2)] for p in [box_centers, box_scales]]
-        if len(self._coop_configs) != 1:
-            batch_ious, dynamic_objness, objness, box_centers, box_scales = \
-                [[pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
-                    num_outputs=len(self._coop_configs), axis=2)] for p in
-                 [batch_ious, dynamic_objness, objness, box_centers, box_scales]]
-        else:
-            batch_ious, dynamic_objness, objness, box_centers, box_scales = \
-                [batch_ious], [dynamic_objness], [objness], [box_centers], [box_scales]
-
-        objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index = \
-            [F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1) for p in
-             [objness_t, center_t, scale_t, weight_t, cls_mask, obj_mask, box_index]]
+        #     batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance = \
+        #         [batch_ious], [dynamic_objness], [objness], [box_centers], [box_scales], [weights_balance]
 
         # the coop_config is ordered in main, but one value can appear more than one time,
         # so when current level value is same as the previous', the index will not increment
-        level_old, level_index = 0, -3
-        for index_xywho, level in enumerate(self._coop_configs):
-            with autograd.pause():
-                denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
-                mask = obj_mask <= level
-
-                if self._coop_mode == 'flat':
-                    grid_weight = self._factor_list[index_xywho]
-                elif self._coop_mode in ['convex', 'concave']:
-                    grid_weight = F.exp(-1 * F.square(obj_mask - self._center_list[index_xywho])
-                                        / (self._sigma_weight ** 2)) * self._factor_list[index_xywho]
-                elif self._coop_mode == 'equal':
-                    grid_weight = (1 / (2*obj_mask-1)) * self._factor_list[index_xywho]
-                else:
-                    raise Exception('coop_mode error in loss layer when compute cls loss')
-
-                obj = F.where(mask, objness_t * grid_weight, dynamic_objness[index_xywho])
-                mask2 = mask.tile(reps=(2,))
-                # + 0.5 level to transform the range(-0.5*level, 0.5*level) to range(0, level)
-                ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
-                # similar to label smooth, here smooth the 0 and 1 label for x y
-                # ctr = F.where(ctr>=0.95, F.ones_like(ctr)*0.95, ctr)
-                # ctr = F.where(ctr<=0.05, F.ones_like(ctr)*0.05, ctr)
-                scl = F.where(mask2, scale_t, F.zeros_like(mask2))
-                wgt = F.where(mask2, weight_t, F.zeros_like(mask2))
-
-                weight = F.broadcast_mul(wgt, obj)
-                hard_objness_t = F.where(obj > 0, F.ones_like(obj), obj)
-                hard_objness_fit = F.pick(batch_ious[index_xywho], index=box_index.squeeze(axis=-1), axis=-1, keepdims=True)
-                # recover hard_objness_t with iou, if box_index has been valued with the box id
-                hard_objness_t = F.where(F.where(mask, box_index, -F.ones_like(mask)) == -1, hard_objness_t, hard_objness_fit)
-                new_objness_mask = F.where(obj > 0, obj, obj >= 0)
-            obj_loss = F.broadcast_mul(self._sigmoid_ce(objness[index_xywho], hard_objness_t, new_objness_mask), denorm)
-            # level ** 0.5 for incrementing the loss for high sigmoid level
-            center_loss = (level ** 0.5) * F.broadcast_mul(self._sigmoid_ce(box_centers[index_xywho], ctr, weight), denorm * 2)
-            scale_loss = F.broadcast_mul(self._l1_loss(box_scales[index_xywho], scl, weight), denorm * 2)
-            if level != level_old:
-                level_index += 3
-            loss[level_index] = obj_loss + loss[level_index]
-            loss[level_index + 1] = center_loss + loss[level_index + 1]
-            loss[level_index + 2] = scale_loss + loss[level_index + 2]
-            level_old = level
+        # level_old, level_index = 0, -3
+        # for index_xywho, level in enumerate(self._coop_configs):
+        #     with autograd.pause():
+        #         denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
+        #         mask = obj_mask <= level
+        #
+        #         if self._coop_mode == 'flat':
+        #             grid_weight = self._factor_list[index_xywho]
+        #         elif self._coop_mode in ['convex', 'concave']:
+        #             grid_weight = F.exp(-1 * F.square(obj_mask - self._center_list[index_xywho])
+        #                                 / (self._sigma_weight ** 2)) * self._factor_list[index_xywho]
+        #         # TODO  to omit this option because the weights_balance is inconsistent with it
+        #         elif self._coop_mode == 'equal':
+        #             grid_weight = (1 / (2*obj_mask-1)) * self._factor_list[index_xywho]
+        #         else:
+        #             raise Exception('coop_mode error in loss layer when compute cls loss')
+        #
+        #         # obj just a weight integration(mixup weight, equal train weight, and grid weight(flat convex concave))
+        #         obj = F.where(mask, objness_t * grid_weight * weights_balance[index_xywho], dynamic_objness[index_xywho])
+        #         # mask2 =
+        #         # ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
+        #         # similar to label smooth, here smooth the 0 and 1 label for x y
+        #         # ctr = F.where(ctr>=0.95, F.ones_like(ctr)*0.95, ctr)
+        #         # ctr = F.where(ctr<=0.05, F.ones_like(ctr)*0.05, ctr)
+        #         # scl = F.where(mask2, scale_t, F.zeros_like(mask2))
+        #         # weight just a weight integration(wh weight, mixup weight, equal train weight)
+        #         weight = F.broadcast_mul(F.where(mask.tile(reps=(2,)), weight_t, F.zeros_like(weight_t)), obj)
+        #         hard_objness_t = F.where(obj > 0, F.ones_like(obj), obj)
+        #         hard_objness_fit = F.pick(batch_ious[index_xywho], index=box_index.squeeze(axis=-1), axis=-1, keepdims=True)
+        #         # recover hard_objness_t with iou, if box_index has been valued with the box id
+        #         hard_objness_t = F.where(F.where(mask, box_index, -F.ones_like(mask)) == -1, hard_objness_t, hard_objness_fit)
+        #         new_objness_mask = F.where(obj > 0, obj, obj >= 0)
         with autograd.pause():
-            mask3 = cls_mask <= max(self._coop_configs)
-            mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
+            denorm = F.cast(F.shape_array(objness_t).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
+            # if self._coop_mode == 'flat':
+            #     grid_weight = factor
+            # elif self._coop_mode in ['convex', 'concave']:
+            #     grid_weight = F.exp(-1 * F.square(obj_mask.expand_dims(-2) - center) / (self._sigma_weight ** 2)) * factor
+            # # TODO  to omit this option because the weights_balance is inconsistent with it
+            # elif self._coop_mode == 'equal':
+            #     grid_weight = (1 / (2*obj_mask.expand_dims(-2)-1)) * factor
+            # else:
+            #     raise Exception('coop_mode error in loss layer when compute cls loss')
+
+            # obj just a weight integration(mixup weight, equal train weight, and grid weight(flat convex concave))
+            mask = weights_balance != 0
+            obj = F.where(mask, F.broadcast_mul(F.broadcast_mul(objness_t, factor), weights_balance), dynamic_objness)
+            # mask2 =
+            # ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
+            # similar to label smooth, here smooth the 0 and 1 label for x y
+            # ctr = F.where(ctr>=0.95, F.ones_like(ctr)*0.95, ctr)
+            # ctr = F.where(ctr<=0.05, F.ones_like(ctr)*0.05, ctr)
+            # scl = F.where(mask2, scale_t, F.zeros_like(mask2))
+            # weight just a weight integration(wh weight, mixup weight, equal train weight)
+            # mask2 = mask.tile(reps=(2, ))
+            # ctr = F.where(mask2, F.broadcast_div(F.broadcast_add(center_t, 0.5 * coop), coop), F.zeros_like(mask2))
+            # scl = F.where(mask2, scale_t, F.zeros_like(mask2))
+            weight = F.broadcast_mul(F.where(mask.tile(reps=(2,)), weight_t, F.zeros_like(weight_t)), obj)
+            hard_objness_t = F.where(obj > 0, F.ones_like(obj), obj)
+            hard_objness_fit = F.pick(batch_ious, index=box_index.squeeze(axis=-1), axis=-1, keepdims=True)
+            # recover hard_objness_t with iou, if box_index has been valued with the box id
+            hard_objness_t = F.where(F.where(mask, box_index, -F.ones_like(mask)) == -1, hard_objness_t, hard_objness_fit)
+            new_objness_mask = F.where(obj > 0, obj, obj >= 0)
+
+        obj_loss = F.broadcast_mul(self._sigmoid_ce(objness, hard_objness_t, new_objness_mask), denorm)
+        center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers, F.broadcast_div(F.broadcast_add(
+            center_t, 0.5 * coop), coop), F.broadcast_mul(weight, coop**0.5)), denorm*2)
+        scale_loss = F.broadcast_mul(self._l1_loss(box_scales, scale_t, weight), denorm * 2)
+
+        with autograd.pause():
+            if len(self._coop_configs) != 1:
+                weights_balance, objness_t = [p.split(num_outputs=len(self._coop_configs),
+                    axis=2)[len(self._coop_configs) - 1] for p in [weights_balance, objness_t]]
+            # weights_balance = weights_balance.reshape((0, -1, 0))
+            mask3 = cls_mask <= self._coop_configs[-1]
+            # mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
             cls = F.where(mask3, F.ones_like(mask3), F.zeros_like(mask3))
             smooth_weight = 1. / self._num_class
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
                 cls = F.where(cls > 0.5, cls - smooth_weight, F.ones_like(cls) * smooth_weight)
             denorm_class = F.cast(F.shape_array(cls).slice_axis(axis=0, begin=1, end=None).prod(), 'float32')
-
-            if self._coop_mode == 'flat':
-                grid_weight = self._factor_max
-            elif self._coop_mode in ['convex', 'concave']:
-                grid_weight = F.exp(-1*F.square(obj_mask-self._center_max)/(self._sigma_weight**2)) * self._factor_max
-            elif self._coop_mode == 'equal':
-                grid_weight = (1 / (2 * obj_mask - 1)) * self._factor_max
-            else:
-                raise Exception('coop_mode error in loss layer when compute cls loss')
-
-            class_mask = F.broadcast_mul(mask4, objness_t * grid_weight)
-        cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls, class_mask), denorm_class)
-        loss[-1] = cls_loss + loss[-1]
-        return loss
+            # if self._coop_mode == 'flat':
+            #     grid_weight = self._factor_max
+            # elif self._coop_mode in ['convex', 'concave']:
+            #     grid_weight = F.exp(-1*F.square(obj_mask-self._center_max)/(self._sigma_weight**2)) * self._factor_max
+            # elif self._coop_mode == 'equal':
+            #     grid_weight = (1 / (2 * obj_mask - 1)) * self._factor_max
+            # else:
+            #     raise Exception('coop_mode error in loss layer when compute cls loss')
+            class_mask = F.broadcast_mul(F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,)),
+                                         objness_t * self._factor_max * weights_balance)
+        # cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls,
+        #     (objness_t * grid_weight * weights_balance[-1]).tile(reps=(self._num_class,))), denorm_class)
+        cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds.expand_dims(-2), cls, class_mask), denorm_class)
+        return obj_loss, center_loss, scale_loss, cls_loss
