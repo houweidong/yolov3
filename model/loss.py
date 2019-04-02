@@ -55,7 +55,7 @@ class SelfLoss(Loss):
             factor_np = np.array(factor_list)[np.newaxis, np.newaxis, :, np.newaxis]
             self.factor = self.params.get_constant('factor_%d' % (index), factor_np)
 
-    def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, gt_boxes, coop, objness_t,
+    def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, coop, gt_boxes, objness_t,
                        center_t, scale_t, weight_t, cls_mask, box_index, weights_balance, factor):
         """Compute YOLOv3 losses.
 
