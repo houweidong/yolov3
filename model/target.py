@@ -226,6 +226,10 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             shift_anchor_boxes = self.bbox2corner(anchor_boxes)
             ious = nd.contrib.box_iou(shift_anchor_boxes, shift_gt_boxes).transpose((1, 0, 2))
             # real value is required to process, convert to Numpy
+            # print(nd.softmax(ious, axis=1))
+            # print(ious[0] / nd.sum(ious[0], axis=0, keepdims=True))
+            # print(nd.softmax(ious[0], axis=0))
+            # print(ious[0])
             matches = ious.argmax(axis=1).asnumpy()  # (B, M)
             valid_gts = (gt_boxes >= 0).asnumpy().prod(axis=-1)  # (B, M)
             np_gtx, np_gty, np_gtw, np_gth = [x.asnumpy() for x in [gtx, gty, gtw, gth]]
@@ -257,9 +261,11 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     distance_x, distance_y = nd.abs(grid_x - loc_x_point), nd.abs(grid_y - loc_y_point)
                     distance_max = nd.array(nd.maximum(distance_x, distance_y))
                     seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
+                    dis_max = nd.sqrt(nd.square(distance_x) + nd.square(distance_y))
 
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
-                    cond = distance_max < distance[b, index, match, 0]
+                    # cond = distance_max < distance[b, index, match, 0]
+                    cond = dis_max < distance[b, index, match, 0]
                     tx = loc_x_point - grid_x
                     ty = loc_y_point - grid_y
                     tw = nd.ones_like(cond) * np.log(max(gtw, 1) / np_anchors[match, 0])
@@ -284,10 +290,11 @@ class SelfPrefetchTargetGenerator(gluon.Block):
 
                     # if self._prob_fit:
                     box_index[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * m, box_index[b, index, match, 0])
-                    distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
+                    # distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
+                    distance[b, index, match, 0] = nd.where(cond, dis_max, distance[b, index, match, 0])
 
             # 100 just for long enough
-            weight_default = np.arange(1, 100, 2)
+            # weight_default = np.arange(1, 100, 2)
             box_index_np = box_index.asnumpy()
             mask_obj_np = mask_obj.asnumpy()
 
@@ -308,16 +315,22 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         # this target with the cfg has been covered by other target
                         if sum(his[:cfg]) == 0:
                             continue
-                        weight_list = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
-                        need_add = sum(weight_default[:cfg][his[:cfg] == 0])
-                        weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
+
+                        # old is bad
+                        #  = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
+                        # need_add = sum(weight_default[:cfg][his[:cfg] == 0])
+                        # weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
+                        # if not self._equal_train:
+                        #     weight_list[:] = 1
+                        # weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
+                        #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
+
+                        # new to try
+                        weight_list = his[:cfg] * (cfg**2) / sum(his[:cfg])
                         if not self._equal_train:
                             weight_list[:] = 1
                         weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
                             == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
-                        # for i in range(cfg):
-                        #     cond_cfg = cond & (mask_obj_np[b, index, match, 0] == i+1)
-                        #     weights_bl[b, index, match, index_cfg, 0][cond_cfg] = weight_list[i]
             # since some stages won't see partial anchors, so we have to slice the correct targets
             objectness = self._slice(objectness, num_anchors, num_offsets)
             center_targets = self._slice(center_targets, num_anchors, num_offsets)
@@ -345,16 +358,6 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                 y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :, :]
                 ret.append(y.reshape((0, -3, 0, 0)))
         return nd.concat(*ret, dim=1)
-    # def _slice_weight(self, x, num_anchors, num_offsets):
-    #     """since some stages won't see partial anchors, so we have to slice the correct targets"""
-    #     # x with shape (B, N, A, 1 or 2)
-    #     anchors = [0] + num_anchors.tolist()
-    #     offsets = [0] + num_offsets.tolist()
-    #     ret = []
-    #     for i in range(len(num_anchors)):
-    #         y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :, :]
-    #         ret.append(y.reshape((0, -1, 1)))
-    #     return nd.concat(*ret, dim=1)
 
 
 class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):

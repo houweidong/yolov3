@@ -108,6 +108,7 @@ def parse_args():
     parser.add_argument('--results-dir', default='result_test', help='path to save results')
     parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
     parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
+    parser.add_argument('--ignore-iou-thresh', type=float, default=0.7)
     args = parser.parse_args()
     return args
 
@@ -344,12 +345,13 @@ if __name__ == '__main__':
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained=args.pretrained, norm_layer=gluon.contrib.nn.SyncBatchNorm,
                         norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
-                        label_smooth=args.label_smooth,
-                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
+                        label_smooth=args.label_smooth, nms_mode=args.nms_mode, coop_mode=args.coop_mode,
+                        sigma_weight=args.sigma_weight, ignore_iou_thresh=args.ignore_iou_thresh)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained=args.pretrained, coop_configs=coop_configs, label_smooth=args.label_smooth,
-                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight)
+                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
+                        ignore_iou_thresh=args.ignore_iou_thresh)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())
