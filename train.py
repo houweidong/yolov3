@@ -165,7 +165,7 @@ def save_params(net, best_map, current_map, epoch, save_interval, prefix, result
         net.save_parameters(os.path.join(result_dir, '{:s}_best.params'.format(prefix, epoch, current_map)))
         with open(os.path.join(result_dir, prefix + '_best_map.log'), 'a') as f:
             f.write('{:04d}:\t{:.4f}\n'.format(epoch, current_map))
-    if save_interval and epoch % save_interval == 0:
+    if save_interval and (epoch + 1) % save_interval == 0:
         net.save_parameters(os.path.join(result_dir, '{:s}_{:04d}_{:.4f}.params'.format(prefix, epoch, current_map)))
 
 
@@ -307,13 +307,13 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
             metric_loss.update()
             if args.log_interval and not (i + 1) % args.log_interval:
                 name_loss_str, name_loss = metric_loss.get()
-                logger.info(('[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec' + name_loss_str).format(
+                logger.info(('[Epoch {}][Batch {}], LR: {:.2E}, Speed: {:.3f} samples/sec, ' + name_loss_str).format(
                     epoch, i, trainer.learning_rate, batch_size / (time.time() - btic), *name_loss))
             btic = time.time()
 
         name_loss_str, name_loss = metric_loss.get()
-        logger.info(('[Epoch {}] Training cost: {:.3f}' + name_loss_str).format(epoch, (time.time() - tic), *name_loss))
-        if not epoch % args.val_interval:
+        logger.info(('[Epoch {}] Training cost: {:.3f}, ' + name_loss_str).format(epoch, (time.time() - tic), *name_loss))
+        if not (epoch + 1) % args.val_interval:
             # consider reduce the frequency of validation to save time
             map_name, mean_ap = validate(net, val_data, ctx, eval_metric, args.nms_mode)
             val_msg = '\n'.join(['{}={}'.format(k, v) for k, v in zip(map_name, mean_ap)])
