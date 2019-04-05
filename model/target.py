@@ -336,7 +336,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
 
                         # new to try
-                        weight_list = his[:cfg] * (cfg**2) / sum(his[:cfg])
+                        weight_list = np.ones_like(his[:cfg]) * (cfg**2) / sum(his[:cfg])
                         if not self._equal_train:
                             weight_list[:] = 1
                         weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
