@@ -25,4 +25,4 @@ python3 train.py --network darknet53 --dataset coco --gpus 5,6 --batch-size 16 -
 --network darknet53 --dataset coco --gpus 8,9 --batch-size 16 -j 16 --log-interval 100 --lr-decay-epoch 80,100 --epochs 120 --syncbn --warmup-epochs 2 --mixup --no-mixup-epochs 20 --label-smooth --no-wd --coop-cfg 5,5,5 --results-dir result_5_fit --fit-epoch 60
 
 # batch 16 cosine pretrained equal-train cfg(2,2,2)
-python3 train.py  --gpus 5,6 --syncbn --label-smooth --no-wd --results-dir results_consin_ep40_nomix_2_2_2_equal --epochs 40 --coop-cfg 2,2,2 --pretrained --equal-train
+python3 train.py  --gpus 0,2 --syncbn --label-smooth --no-wd --results-dir results_2_2_2_margin1  --coop-cfg 2,2,2 --pretrained --margin 1
