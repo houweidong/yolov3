@@ -47,22 +47,27 @@ class YOLOOutputV3(gluon.HybridBlock):
         to export to symbol so we can run it in c++, Scalar, etc.
     """
 
-    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight,
-                 coop_config=(1,), alloc_size=(128, 128), label_smooth=True, **kwargs):
+    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=(1,),
+                 alloc_size=(128, 128), label_smooth=True, specific_anchor=False, coop_loss=False, **kwargs):
         super(YOLOOutputV3, self).__init__(**kwargs)
         anchors = np.array(anchors).astype('float32')
         self._xywho_num = len(coop_config)
         self._classes = num_class
-        self._num_pred = self._xywho_num * (1 + 4) + num_class  # 1 objness + 4 box + num_class
+
+        self._specific_anchor = specific_anchor
+        self._coop_loss = coop_loss
+        self._num_specific_anchor = 1 if specific_anchor else 0
+        self._num_pred = self._xywho_num * (1 + 4 + self._num_specific_anchor) + num_class
         self._num_anchors = anchors.size // 2
+        self.all_pred = self._num_pred * self._num_anchors
+
         self._stride = stride
         dic = {32: slice(0, 1), 16: slice(1, 5), 8: slice(5, 21)}
         assert coop_mode in ['flat', 'convex', 'concave', 'equal']
         self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
-                              coop_mode, sigma_weight)
+                              coop_mode, sigma_weight, specific_anchor, coop_loss)
         with self.name_scope():
-            all_pred = self._num_pred * self._num_anchors
-            self.prediction = nn.Conv2D(all_pred, kernel_size=1, padding=0, strides=1)
+            self.prediction = nn.Conv2D(self.all_pred, kernel_size=1, padding=0, strides=1)
             # anchors will be multiplied to predictions
             anchors = anchors.reshape((1, 1, -1, 1, 2))
             self.anchors_self = self.params.get_constant('anchor_%d' % (index), anchors)
@@ -150,9 +155,10 @@ class YOLOOutputV3(gluon.HybridBlock):
             During inference, return detections.
         """
         # prediction flat to (batch, pred per pixel, height * width)
-        pred = self.prediction(x).reshape((0, self._num_anchors * self._num_pred, -1))
+        pred = self.prediction(x).reshape((0, self.all_pred, -1)).transpose(axes=(0, 2, 1))
         # transpose to (batch, height * width, num_anchor, num_pred)
-        pred = pred.transpose(axes=(0, 2, 1)).reshape((0, -1, self._num_anchors, self._num_pred))
+        pred = pred.reshape((0, -1, self._num_anchors, self._num_pred))
+
         # components
         # transpose to (batch, height * width, num_anchor, num_xywho, 5)
         xywho = pred.slice_axis(axis=-1, begin=0, end=-self._classes).reshape((0, 0, 0, self._xywho_num, 5))
@@ -168,7 +174,7 @@ class YOLOOutputV3(gluon.HybridBlock):
 
         box_centers = F.broadcast_add(F.broadcast_mul(F.sigmoid(ctrs), horizontal_sig_levels), offsets) * self._stride
         box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors_self)
-        confidence = F.sigmoid(objness)
+        confidence = F.sigmoid(xywho.slice_axis(axis=-1, begin=4, end=5))
         class_score = F.broadcast_mul(F.sigmoid(class_pred).expand_dims(-2), confidence)
         wh = box_scales / 2.0
         bbox = F.concat(box_centers - wh, box_centers + wh, dim=-1)
@@ -176,7 +182,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         if autograd.is_training():
             # during training, we don't need to convert whole bunch of info to detection results
             if autograd.is_recording():
-                objness = objness.reshape((0, -3, 0, 1))
+                objness = objness.reshape((0, -3, 0, -1))
                 ctrs = ctrs.reshape((0, -3, 0, 2))
                 raw_box_scales = raw_box_scales.reshape((0, -3, 0, 2))
                 class_pred = class_pred.reshape((0, -3, -1))
@@ -259,10 +265,10 @@ class YOLOV3(gluon.HybridBlock):
         the sigma_weight is the distribution's params
     """
 
-    def __init__(self, stages, channels, anchors, strides, classes, alloc_size=(128, 128),
-                 nms_thresh=0.45, nms_topk=400, post_nms=100, pos_iou_thresh=1.0, ignore_iou_thresh=0.7,
-                 norm_layer=BatchNorm, norm_kwargs=None, coop_configs=((1,), (1,), (1,)), label_smooth=True,
-                 nms_mode='Default', coop_mode='flat', sigma_weight=1.6, **kwargs):
+    def __init__(self, stages, channels, anchors, strides, classes, alloc_size=(128, 128), nms_thresh=0.45, nms_topk=400,
+                 post_nms=100, pos_iou_thresh=1.0, ignore_iou_thresh=0.7,norm_layer=BatchNorm, norm_kwargs=None,
+                 coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
+                 sigma_weight=1.6, specific_anchor=False, coop_loss=False, **kwargs):
         super(YOLOV3, self).__init__(**kwargs)
         assert nms_mode in ['Default', 'Merge', 'Exclude']
         self._coop_configs = coop_configs
@@ -277,6 +283,8 @@ class YOLOV3(gluon.HybridBlock):
         self._strides = strides[::-1]
         self._loss_stride = None
         self._nms_mode = nms_mode
+        self._specific_anchor = specific_anchor
+        self._coop_loss = coop_loss
 
         with self.name_scope():
             self.stages = nn.HybridSequential()
@@ -291,7 +299,8 @@ class YOLOV3(gluon.HybridBlock):
                     channel, norm_layer=norm_layer, norm_kwargs=norm_kwargs)
                 self.yolo_blocks.add(block)
                 output = YOLOOutputV3(i, len(classes), anchor, stride, self._ignore_iou_thresh, coop_mode, sigma_weight,
-                                      coop_config=coop_config, alloc_size=alloc_size, label_smooth=label_smooth)
+                                      coop_config=coop_config, alloc_size=alloc_size, label_smooth=label_smooth,
+                                      specific_anchor=specific_anchor, coop_loss=coop_loss)
                 self.yolo_outputs.add(output)
                 if i > 0:
                     self.transitions.add(_conv2d(channel, 1, 0, 1,
@@ -493,12 +502,14 @@ class YOLOV3(gluon.HybridBlock):
             outputs.reset_class(classes, reuse_weights=reuse_weights)
 
 
+# to decide whether to pretrain yolov3
 def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, dataset, pretrained=False, ctx=mx.cpu(),
                root=os.path.join('~', '.mxnet', 'models'), nms_mode='Default', label_smooth=True, coop_mode='flat',
-               sigma_weight=1.6, ignore_iou_thresh=0.7, **kwargs):
+               sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor=False, coop_loss=False, **kwargs):
     net = YOLOV3(stages, filters, anchors, strides,
                  classes=classes, coop_configs=coop_configs, label_smooth=label_smooth, nms_mode=nms_mode,
-                 coop_mode=coop_mode, sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, **kwargs)
+                 coop_mode=coop_mode, sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh,
+                 specific_anchor=specific_anchor, coop_loss=coop_loss, **kwargs)
     if pretrained:
         from gluoncv.model_zoo.model_store import get_model_file
         full_name = '_'.join(('yolo3', name, dataset))
@@ -507,9 +518,10 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, d
     return net
 
 
+# to build the backbone for yolov3
 def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=BatchNorm, norm_kwargs=None,
                          coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
-                         sigma_weight=1.6, ignore_iou_thresh=0.7, **kwargs):
+                         sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor=False, coop_loss=False, **kwargs):
     """
     Returns
     -------
@@ -527,7 +539,8 @@ def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=Batc
     return get_yolov3(
         'darknet53', stages, [512, 256, 128], anchors, strides, classes, coop_configs, 'coco', pretrained=pretrained,
         norm_layer=norm_layer, norm_kwargs=norm_kwargs, label_smooth=label_smooth, nms_mode=nms_mode, coop_mode=coop_mode,
-        sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, **kwargs)
+        sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, specific_anchor=specific_anchor,
+        coop_loss=coop_loss, **kwargs)
 
 
 _models = {

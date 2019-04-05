@@ -40,8 +40,8 @@ class SelfDefaultTrainTransform(object):
 
     """
 
-    def __init__(self, width, height, net=None, mean=(0.485, 0.456, 0.406),
-                 std=(0.229, 0.224, 0.225), mixup=False, coop_configs=((1,), (1,), (1,)), equal_train=False, **kwargs):
+    def __init__(self, width, height, net=None, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), mixup=False,
+                 coop_configs=((1,), (1,), (1,)), equal_train=False, margin=0.5, **kwargs):
         self._width = width
         self._height = height
         self._mean = mean
@@ -58,7 +58,7 @@ class SelfDefaultTrainTransform(object):
         with autograd.train_mode():
             self._anchors, self._offsets, self._feat_maps = net(self._fake_x)
         self._target_generator = SelfPrefetchTargetGenerator(
-            num_class=len(net.classes), coop_configs=coop_configs, equal_train=equal_train, **kwargs)
+            num_class=len(net.classes), coop_configs=coop_configs, equal_train=equal_train, margin=margin, **kwargs)
 
     def set_prob_fit(self, prob_fit=False):
         """Set mixup random sampler, use None to disable.
@@ -137,7 +137,8 @@ class SelfPrefetchTargetGenerator(gluon.Block):
 
     """
 
-    def __init__(self, num_class, prob_fit=False, coop_configs=((1,), (1,), (1,)), equal_train=False, **kwargs):
+    def __init__(self, num_class, prob_fit=False, coop_configs=((1,), (1,), (1,)), equal_train=False,
+                 margin=0.5, **kwargs):
         super(SelfPrefetchTargetGenerator, self).__init__(**kwargs)
         self._prob_fit = prob_fit
         self._equal_train = equal_train
@@ -146,6 +147,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         self.bbox2corner = BBoxCenterToCorner(axis=-1, split=False)
         self._coop_configs = coop_configs[::-1]
         self._max_thickness = max([len(cfg) for cfg in coop_configs])
+        self._margin = margin
 
     def set_prob_fit(self, prob_fit=False):
         """Set mixup random sampler, use None to disable.
@@ -212,6 +214,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             objectness = nd.zeros_like(weights.split(axis=-1, num_outputs=2)[0])
             mask_obj = nd.ones_like(objectness) * 1000
             distance = nd.ones_like(objectness) * 1000
+            distance_margin = nd.ones_like(objectness) * 1000
             mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
             mask_cls[:] = 1000  # prefill 1000 for ignores
             box_index = nd.ones_like(objectness) * -1
@@ -261,11 +264,14 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     distance_x, distance_y = nd.abs(grid_x - loc_x_point), nd.abs(grid_y - loc_y_point)
                     distance_max = nd.array(nd.maximum(distance_x, distance_y))
                     seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
-                    dis_max = nd.sqrt(nd.square(distance_x) + nd.square(distance_y))
+                    dis = nd.sqrt(nd.square(distance_x) + nd.square(distance_y))
 
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
-                    # cond = distance_max < distance[b, index, match, 0]
-                    cond = dis_max < distance[b, index, match, 0]
+                    cond = dis < distance[b, index, match, 0]
+
+                    dis_margin = nd.abs(distance[b, index, match, 0] - dis)
+                    cond_mg = (dis_margin < distance_margin[b, index, match, 0]) + cond
+                    distance_margin[b, index, match, 0] = nd.where(cond_mg, dis_margin, distance_margin[b, index, match, 0])
                     tx = loc_x_point - grid_x
                     ty = loc_y_point - grid_y
                     tw = nd.ones_like(cond) * np.log(max(gtw, 1) / np_anchors[match, 0])
@@ -291,7 +297,11 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     # if self._prob_fit:
                     box_index[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * m, box_index[b, index, match, 0])
                     # distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
-                    distance[b, index, match, 0] = nd.where(cond, dis_max, distance[b, index, match, 0])
+                    distance[b, index, match, 0] = nd.where(cond, dis, distance[b, index, match, 0])
+
+            # to modify the mask for margin the grid
+            cond_modify = (distance_margin < self._margin) * (mask_obj != 1)
+            mask_obj = nd.where(cond_modify, nd.ones_like(cond_modify) * 1000, mask_obj)
 
             # 100 just for long enough
             # weight_default = np.arange(1, 100, 2)

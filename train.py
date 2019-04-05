@@ -19,7 +19,7 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
-from model.utils import get_order_config, LossMetricSimple, get_coop_config, self_box_nms
+from model.utils import LossMetricSimple, get_coop_config, self_box_nms
 from model.target import SelfDefaultTrainTransform
 from mxnet import nd
 
@@ -109,6 +109,9 @@ def parse_args():
     parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
     parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
     parser.add_argument('--ignore-iou-thresh', type=float, default=0.7)
+    parser.add_argument('--margin', type=float, default=0)
+    parser.add_argument('--specific-anchor', action='store_true', help='whether to train specific anchor.')
+    parser.add_argument('--coop-loss', action='store_true', help='whether to train with cooperation loss.')
     args = parser.parse_args()
     return args
 
@@ -144,11 +147,11 @@ def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(train_dataset.transform(SelfDefaultTrainTransform(width, height, net,
-            mixup=args.mixup, coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train)), batch_size, True,
-            batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
+            mixup=args.mixup, coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train, margin=args.margin)),
+            batch_size, True, batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
     else:
-        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, mixup=args.mixup,
-            coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train) for x in range(10, 20)]
+        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, coop_configs=get_coop_config(args.coop_cfg),
+            mixup=args.mixup, equal_train=args.equal_train, margin=args.margin) for x in range(10, 20)]
         train_loader = RandomTransformDataLoader(
             transform_fns, train_dataset, batch_size=batch_size, interval=10, last_batch='rollover',
             shuffle=True, batchify_fn=batchify_fn, num_workers=num_workers)
@@ -344,14 +347,16 @@ if __name__ == '__main__':
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained=args.pretrained, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs,
-                        label_smooth=args.label_smooth, nms_mode=args.nms_mode, coop_mode=args.coop_mode,
-                        sigma_weight=args.sigma_weight, ignore_iou_thresh=args.ignore_iou_thresh)
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth,
+                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
+                        ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
+                        coop_loss=args.coop_loss)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained=args.pretrained, coop_configs=coop_configs, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
-                        ignore_iou_thresh=args.ignore_iou_thresh)
+                        ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
+                        coop_loss=args.coop_loss)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())

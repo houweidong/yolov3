@@ -35,14 +35,15 @@ class SelfLoss(Loss):
     """
 
     def __init__(self, index, num_class, ignore_iou_thresh, coop_configs, target_slice, label_smooth,
-                 coop_mode, sigma_weight, batch_axis=0, weight=None, **kwargs):
+                 coop_mode, sigma_weight, specific_anchor, coop_loss, batch_axis=0, weight=None, **kwargs):
         super(SelfLoss, self).__init__(weight, batch_axis, **kwargs)
         self._coop_mode = coop_mode
         self._sigma_weight = sigma_weight
         self._target_slice = target_slice
         self._num_class = num_class
+        self._spe_anchor = specific_anchor
+        self._coop_loss = coop_loss
         self._sigmoid_ce = gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=False)
-        # self._ce = gluon.loss.SigmoidBinaryCrossEntropyLoss(from_sigmoid=True)
         self._l1_loss = gluon.loss.L1Loss()
         # self._l2_loss = gluon.loss.L2Loss()
         self._label_smooth = label_smooth
