@@ -1,7 +1,6 @@
 import mxnet as mx
-from math import pi, cos
-from mxnet import lr_scheduler
-from mxnet import nd
+# from math import pi, cos
+# from mxnet import nd
 import numpy as np
 from gluoncv.data.batchify import Pad
 

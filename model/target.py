@@ -206,9 +206,11 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         with autograd.pause():
 
             # output
-            shape_like = all_anchors.reshape((1, -1, 2)) * all_offsets.reshape(
-                (-1, 1, 2)).expand_dims(0).repeat(repeats=gt_ids.shape[0], axis=0)
-            center_targets = nd.zeros_like(shape_like)
+            # shape_like = all_anchors.reshape((1, -1, 2)) * all_offsets.reshape(
+            #     (-1, 1, 2)).expand_dims(0).repeat(repeats=gt_ids.shape[0], axis=0)
+            #
+            # center_targets = nd.zeros_like(shape_like)
+            center_targets = nd.zeros(shape=(gt_ids.shape[0], all_offsets.shape[0], 3, 2))
             scale_targets = nd.zeros_like(center_targets)
             weights = nd.zeros_like(center_targets)
             objectness = nd.zeros_like(weights.split(axis=-1, num_outputs=2)[0])
@@ -245,8 +247,9 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                 for m in range(matches.shape[1]):
                     if valid_gts[b, m] < 1:
                         break
-                    match = int(matches[b, m])
-                    nlayer = np.nonzero(num_anchors > match)[0][0]
+                    match9 = int(matches[b, m])
+                    match = match9 % 3
+                    nlayer = np.nonzero(num_anchors > match9)[0][0]
                     height = xs[nlayer].shape[2]
                     width = xs[nlayer].shape[3]
 
@@ -274,8 +277,8 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     distance_margin[b, index, match, 0] = nd.where(cond_mg, dis_margin, distance_margin[b, index, match, 0])
                     tx = loc_x_point - grid_x
                     ty = loc_y_point - grid_y
-                    tw = nd.ones_like(cond) * np.log(max(gtw, 1) / np_anchors[match, 0])
-                    th = nd.ones_like(cond) * np.log(max(gth, 1) / np_anchors[match, 1])
+                    tw = nd.ones_like(cond) * np.log(max(gtw, 1) / np_anchors[match9, 0])
+                    th = nd.ones_like(cond) * np.log(max(gth, 1) / np_anchors[match9, 1])
                     twg = nd.ones_like(cond) * (2.0 - gtw * gth / orig_width / orig_height)
                     tobj = nd.ones_like(cond) * (np_gt_mixratios[b, m, 0] if np_gt_mixratios is not None else 1)
 
@@ -314,8 +317,9 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         break
 
                     # use match to reduce time but box_index_np[b, index, :, 0]
-                    match = int(matches[b, m])
-                    nlayer = np.nonzero(num_anchors > match)[0][0]
+                    match9 = int(matches[b, m])
+                    match = match9 % 3
+                    nlayer = np.nonzero(num_anchors > match9)[0][0]
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
                     max_level = self._coop_configs[nlayer][-1]
                     cond = (box_index_np[b, index, match, 0] == m) & (mask_obj_np[b, index, match, 0] <= max_level)
@@ -342,32 +346,39 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
                             == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
             # since some stages won't see partial anchors, so we have to slice the correct targets
-            objectness = self._slice(objectness, num_anchors, num_offsets)
-            center_targets = self._slice(center_targets, num_anchors, num_offsets)
-            scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
-            weights = self._slice(weights, num_anchors, num_offsets)
-            # mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
-            mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
-            box_index = self._slice(box_index, num_anchors, num_offsets)
-            weights_bl = self._slice(nd.array(weights_bl), num_anchors, num_offsets, True)
+            # objectness = self._slice(objectness, num_anchors, num_offsets)
+            # center_targets = self._slice(center_targets, num_anchors, num_offsets)
+            # scale_targets = self._slice(scale_targets, num_anchors, num_offsets)
+            # weights = self._slice(weights, num_anchors, num_offsets)
+            # # mask_obj = self._slice(mask_obj, num_anchors, num_offsets)
+            # mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
+            # box_index = self._slice(box_index, num_anchors, num_offsets)
+            # weights_bl = self._slice(nd.array(weights_bl), num_anchors, num_offsets, True)
+            objectness = objectness.reshape((0, -3, 1, -1))
+            center_targets = center_targets.reshape((0, -3, 1, -1))
+            scale_targets = scale_targets.reshape((0, -3, 1, -1))
+            weights = weights.reshape((0, -3, 1, -1))
+            mask_cls = mask_cls.reshape((0, -3, 1, -1))
+            box_index = box_index.reshape((0, -3, 1, -1))
+            weights_bl = nd.array(weights_bl).reshape((0, -3, 0, 0))
             if not self._prob_fit:
                 box_index[:] = -1
         return objectness, center_targets, scale_targets, weights, mask_cls, box_index, weights_bl
 
-    def _slice(self, x, num_anchors, num_offsets, if_w=False):
-        """since some stages won't see partial anchors, so we have to slice the correct targets"""
-        # x with shape (B, N, A, 1 or 2)
-        anchors = [0] + num_anchors.tolist()
-        offsets = [0] + num_offsets.tolist()
-        ret = []
-        for i in range(len(num_anchors)):
-            if not if_w:
-                y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :]
-                ret.append(y.reshape((0, -3, 1, -1)))
-            else:
-                y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :, :]
-                ret.append(y.reshape((0, -3, 0, 0)))
-        return nd.concat(*ret, dim=1)
+    # def _slice(self, x, num_anchors, num_offsets, if_w=False):
+    #     """since some stages won't see partial anchors, so we have to slice the correct targets"""
+    #     # x with shape (B, N, A, 1 or 2)
+    #     anchors = [0] + num_anchors.tolist()
+    #     offsets = [0] + num_offsets.tolist()
+    #     ret = []
+    #     for i in range(len(num_anchors)):
+    #         if not if_w:
+    #             y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :]
+    #             ret.append(y.reshape((0, -3, 1, -1)))
+    #         else:
+    #             y = x[:, offsets[i]:offsets[i + 1], anchors[i]:anchors[i + 1], :, :]
+    #             ret.append(y.reshape((0, -3, 0, 0)))
+    #     return nd.concat(*ret, dim=1)
 
 
 class SelfDynamicTargetGeneratorSimple(gluon.HybridBlock):

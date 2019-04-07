@@ -110,7 +110,10 @@ def parse_args():
     parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
     parser.add_argument('--ignore-iou-thresh', type=float, default=0.7)
     parser.add_argument('--margin', type=float, default=0)
-    parser.add_argument('--specific-anchor', action='store_true', help='whether to train specific anchor.')
+    parser.add_argument('--specific-anchor', type=str, default='default',
+                        choices=['default', 'rectangle', 'rectanglefix', 'square'])
+    parser.add_argument('--sa-level', type=int, default=2, choices=[1, 2, 3])
+    parser.add_argument('--sq-level', type=int, default=5)
     parser.add_argument('--coop-loss', action='store_true', help='whether to train with cooperation loss.')
     args = parser.parse_args()
     return args
@@ -350,13 +353,13 @@ if __name__ == '__main__':
                         norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        coop_loss=args.coop_loss)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
         async_net = get_model(net_name, pretrained_base=False)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained=args.pretrained, coop_configs=coop_configs, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        coop_loss=args.coop_loss)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())

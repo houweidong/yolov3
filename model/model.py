@@ -9,204 +9,11 @@ from mxnet.gluon import nn
 from mxnet.gluon.nn import BatchNorm
 from gluoncv.model_zoo.yolo.darknet import _conv2d, darknet53
 from gluoncv.model_zoo.yolo.yolo_target import YOLOV3TargetMerger
-from model.loss import SelfLoss
+# from model.loss import SelfLoss
 from model.utils import get_order_config
-
+from model.model_utils import YOLOOutputV3
 from gluoncv.model_zoo.yolo.yolo3 import _upsample, YOLODetectionBlockV3
 from gluoncv.model_zoo.yolo import yolo3_darknet53_custom, yolo3_mobilenet1_0_coco, yolo3_mobilenet1_0_custom
-
-
-class YOLOOutputV3(gluon.HybridBlock):
-    """YOLO output layer V3.
-    Parameters
-    ----------
-    index : int
-        Index of the yolo output layer, to avoid naming conflicts only.
-    num_class : int
-        Number of foreground objects.
-    anchors : iterable
-        The anchor setting. Reference: https://arxiv.org/pdf/1804.02767.pdf.
-    stride : int
-        Stride of feature map.
-    ignore_iou_thresh : float
-        ignore the box loss whose iou with the gt larger than the ignore_iou_thresh
-    coop_mode : string
-        "flat", different level grids have same weight loss in the training phase
-        "convex", the center grids have higher weight than the marginal grids in the training phase
-        "concave", the marginal grids have higher weight than the center grids in the training phase
-        "equal", consider the num of the same level grids to make loss equal
-    sigma_weight : float
-        for coop_mode params, we use Gaussian distribution to generate the weights according to the grid level,
-        the sigma_weight is the distribution's params
-    coop_configs : tuple, such as (1, )
-        current sigmoid config
-    alloc_size : tuple of int, default is (128, 128)
-        For advanced users. Define `alloc_size` to generate large enough anchor
-        maps, which will later saved in parameters. During inference, we support arbitrary
-        input image by cropping corresponding area of the anchor map. This allow us
-        to export to symbol so we can run it in c++, Scalar, etc.
-    """
-
-    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=(1,),
-                 alloc_size=(128, 128), label_smooth=True, specific_anchor=False, coop_loss=False, **kwargs):
-        super(YOLOOutputV3, self).__init__(**kwargs)
-        anchors = np.array(anchors).astype('float32')
-        self._xywho_num = len(coop_config)
-        self._classes = num_class
-
-        self._specific_anchor = specific_anchor
-        self._coop_loss = coop_loss
-        self._num_specific_anchor = 1 if specific_anchor else 0
-        self._num_pred = self._xywho_num * (1 + 4 + self._num_specific_anchor) + num_class
-        self._num_anchors = anchors.size // 2
-        self.all_pred = self._num_pred * self._num_anchors
-
-        self._stride = stride
-        dic = {32: slice(0, 1), 16: slice(1, 5), 8: slice(5, 21)}
-        assert coop_mode in ['flat', 'convex', 'concave', 'equal']
-        self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
-                              coop_mode, sigma_weight, specific_anchor, coop_loss)
-        with self.name_scope():
-            self.prediction = nn.Conv2D(self.all_pred, kernel_size=1, padding=0, strides=1)
-            # anchors will be multiplied to predictions
-            anchors = anchors.reshape((1, 1, -1, 1, 2))
-            self.anchors_self = self.params.get_constant('anchor_%d' % (index), anchors)
-            # offsets will be added to predictions
-            grid_x = np.arange(alloc_size[1])
-            grid_y = np.arange(alloc_size[0])
-            grid_x, grid_y = np.meshgrid(grid_x, grid_y)
-            # stack to (n, n, 2)
-            offsets = np.concatenate((grid_x[:, :, np.newaxis], grid_y[:, :, np.newaxis]), axis=-1)
-            # expand dims to (1, 1, n, n, 2) so it's easier for broadcasting
-            offsets = np.expand_dims(np.expand_dims(offsets, axis=0), axis=0)
-            self.offsets_self = self.params.get_constant('offset_%d' % (index), offsets)
-            horizontal_sig_levels = np.array(coop_config)[np.newaxis, np.newaxis, np.newaxis, :, np.newaxis]
-            self.horizontal_sig_levels = self.params.get_constant('sig_level_%d' % (index), horizontal_sig_levels)
-
-    def reset_class(self, classes, reuse_weights=None):
-        """Reset class prediction.
-        Parameters
-        ----------
-        classes : type
-            Description of parameter `classes`.
-        reuse_weights : dict
-            A {new_integer : old_integer} mapping dict that allows the new predictor to reuse the
-            previously trained weights specified by the integer index.
-        Returns
-        -------
-        type
-            Description of returned object.
-        """
-        self._clear_cached_op()
-        # keep old records
-        old_classes = self._classes
-        old_pred = self.prediction
-        old_num_pred = self._num_pred
-        ctx = list(old_pred.params.values())[0].list_ctx()
-        self._classes = len(classes)
-        self._num_pred = 1 + 4 + len(classes)
-        all_pred = self._num_pred * self._num_anchors
-        # to avoid deferred init, number of in_channels must be defined
-        in_channels = list(old_pred.params.values())[0].shape[1]
-        self.prediction = nn.Conv2D(
-            all_pred, kernel_size=1, padding=0, strides=1,
-            in_channels=in_channels, prefix=old_pred.prefix)
-        self.prediction.initialize(ctx=ctx)
-        if reuse_weights:
-            new_pred = self.prediction
-            assert isinstance(reuse_weights, dict)
-            for old_params, new_params in zip(old_pred.params.values(), new_pred.params.values()):
-                old_data = old_params.data()
-                new_data = new_params.data()
-                for k, v in reuse_weights.items():
-                    if k >= self._classes or v >= old_classes:
-                        warnings.warn("reuse mapping {}/{} -> {}/{} out of range".format(
-                            k, self._classes, v, old_classes))
-                        continue
-                    for i in range(self._num_anchors):
-                        off_new = i * self._num_pred
-                        off_old = i * old_num_pred
-                        # copy along the first dimension
-                        new_data[1 + 4 + k + off_new] = old_data[1 + 4 + v + off_old]
-                        # copy non-class weights as well
-                        new_data[off_new: 1 + 4 + off_new] = old_data[off_old: 1 + 4 + off_old]
-                # set data to new conv layers
-                new_params.set_data(new_data)
-
-    def hybrid_forward(self, F, x, *args, anchors_self, offsets_self, horizontal_sig_levels):
-        """Hybrid Forward of YOLOV3Output layer.
-        Parameters
-        ----------
-        F : mxnet.nd or mxnet.sym
-            `F` is mxnet.sym if hybridized or mxnet.nd if not.
-        x : mxnet.nd.NDArray
-            Input feature map.
-        anchors : mxnet.nd.NDArray
-            Anchors loaded from self, no need to supply.
-        offsets : mxnet.nd.NDArray
-            Offsets loaded from self, no need to supply.
-        horizontal_sig_levels : mxnet.nd.NDArray
-            horizontal_sig_levels loaded from self, no need to supply.
-        Returns
-        -------
-        (tuple of) mxnet.nd.NDArray
-            During training, return (bbox, raw_box_centers, raw_box_scales, objness,
-            class_pred, anchors, offsets).
-            During inference, return detections.
-        """
-        # prediction flat to (batch, pred per pixel, height * width)
-        pred = self.prediction(x).reshape((0, self.all_pred, -1)).transpose(axes=(0, 2, 1))
-        # transpose to (batch, height * width, num_anchor, num_pred)
-        pred = pred.reshape((0, -1, self._num_anchors, self._num_pred))
-
-        # components
-        # transpose to (batch, height * width, num_anchor, num_xywho, 5)
-        xywho = pred.slice_axis(axis=-1, begin=0, end=-self._classes).reshape((0, 0, 0, self._xywho_num, 5))
-        class_pred = pred.slice_axis(axis=-1, begin=-self._classes, end=None)
-        ctrs = xywho.slice_axis(axis=-1, begin=0, end=2)
-        raw_box_scales = xywho.slice_axis(axis=-1, begin=2, end=4)
-        objness = xywho.slice_axis(axis=-1, begin=4, end=None)
-
-        # valid offsets, (1, 1, height, width, 2)
-        offsets = F.slice_like(offsets_self, x * 0, axes=(2, 3))
-        # reshape to (1, height*width, 1, 2)
-        offsets = F.broadcast_sub(offsets.reshape((1, -1, 1, 2)).expand_dims(-2) + 0.5, 0.5 * horizontal_sig_levels)
-
-        box_centers = F.broadcast_add(F.broadcast_mul(F.sigmoid(ctrs), horizontal_sig_levels), offsets) * self._stride
-        box_scales = F.broadcast_mul(F.exp(raw_box_scales), anchors_self)
-        confidence = F.sigmoid(xywho.slice_axis(axis=-1, begin=4, end=5))
-        class_score = F.broadcast_mul(F.sigmoid(class_pred).expand_dims(-2), confidence)
-        wh = box_scales / 2.0
-        bbox = F.concat(box_centers - wh, box_centers + wh, dim=-1)
-
-        if autograd.is_training():
-            # during training, we don't need to convert whole bunch of info to detection results
-            if autograd.is_recording():
-                objness = objness.reshape((0, -3, 0, -1))
-                ctrs = ctrs.reshape((0, -3, 0, 2))
-                raw_box_scales = raw_box_scales.reshape((0, -3, 0, 2))
-                class_pred = class_pred.reshape((0, -3, -1))
-                bbox = bbox.reshape((0, -1, 4))
-                return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox,
-                                  horizontal_sig_levels.reshape((0, -3, -1, 1)), *args)
-            else:
-                return anchors_self, offsets
-
-        # # prediction per class
-        # bboxes = F.tile(bbox, reps=(self._classes, 1, 1, 1, 1))
-        # scores = F.transpose(class_score, axes=(3, 0, 1, 2)).expand_dims(axis=-1)
-        # ids = F.broadcast_add(scores * 0, F.arange(0, self._classes).reshape((0, 1, 1, 1, 1)))
-        # detections = F.concat(ids, scores, bboxes, dim=-1)
-        # # reshape to (B, xx, 6)
-        # detections = F.reshape(detections.transpose(axes=(1, 0, 2, 3, 4)), (0, -1, 6))
-        # prediction per class
-        bboxes = F.tile(bbox, reps=(self._classes, 1, 1, 1, 1, 1))
-        scores = F.transpose(class_score, axes=(4, 0, 1, 2, 3)).expand_dims(axis=-1)
-        ids = F.broadcast_add(scores * 0, F.arange(0, self._classes).reshape((0, 1, 1, 1, 1, 1)))
-        detections = F.concat(ids, scores, bboxes, dim=-1)
-        # reshape to (B, xx, 6)
-        detections = F.reshape(detections.transpose(axes=(1, 0, 2, 3, 4, 5)), (0, -1, 6))
-        return detections
 
 
 class YOLOV3(gluon.HybridBlock):
@@ -268,7 +75,7 @@ class YOLOV3(gluon.HybridBlock):
     def __init__(self, stages, channels, anchors, strides, classes, alloc_size=(128, 128), nms_thresh=0.45, nms_topk=400,
                  post_nms=100, pos_iou_thresh=1.0, ignore_iou_thresh=0.7,norm_layer=BatchNorm, norm_kwargs=None,
                  coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
-                 sigma_weight=1.6, specific_anchor=False, coop_loss=False, **kwargs):
+                 sigma_weight=1.6, specific_anchor='default', sa_level=1, kernels=None, coop_loss=False, **kwargs):
         super(YOLOV3, self).__init__(**kwargs)
         assert nms_mode in ['Default', 'Merge', 'Exclude']
         self._coop_configs = coop_configs
@@ -284,6 +91,7 @@ class YOLOV3(gluon.HybridBlock):
         self._loss_stride = None
         self._nms_mode = nms_mode
         self._specific_anchor = specific_anchor
+        self._sa_level = sa_level
         self._coop_loss = coop_loss
 
         with self.name_scope():
@@ -292,15 +100,15 @@ class YOLOV3(gluon.HybridBlock):
             self.yolo_blocks = nn.HybridSequential()
             self.yolo_outputs = nn.HybridSequential()
             # note that anchors and strides should be used in reverse order
-            for i, stage, channel, anchor, stride, coop_config in zip(
-                    range(len(stages)), stages, channels, anchors[::-1], strides[::-1], coop_configs[::-1]):
+            for i, stage, channel, anchor, stride, coop_config, kernel in zip(
+                    range(len(stages)), stages, channels, anchors[::-1], strides[::-1], coop_configs[::-1], kernels[::-1]):
                 self.stages.add(stage)
-                block = YOLODetectionBlockV3(
-                    channel, norm_layer=norm_layer, norm_kwargs=norm_kwargs)
+                block = YOLODetectionBlockV3(channel, norm_layer=norm_layer, norm_kwargs=norm_kwargs)
                 self.yolo_blocks.add(block)
                 output = YOLOOutputV3(i, len(classes), anchor, stride, self._ignore_iou_thresh, coop_mode, sigma_weight,
                                       coop_config=coop_config, alloc_size=alloc_size, label_smooth=label_smooth,
-                                      specific_anchor=specific_anchor, coop_loss=coop_loss)
+                                      specific_anchor=specific_anchor, sa_level=sa_level, kernels=kernel, coop_loss=coop_loss,
+                                      norm_layer=norm_layer, norm_kwargs=norm_kwargs)
                 self.yolo_outputs.add(output)
                 if i > 0:
                     self.transitions.add(_conv2d(channel, 1, 0, 1,
@@ -505,11 +313,12 @@ class YOLOV3(gluon.HybridBlock):
 # to decide whether to pretrain yolov3
 def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, dataset, pretrained=False, ctx=mx.cpu(),
                root=os.path.join('~', '.mxnet', 'models'), nms_mode='Default', label_smooth=True, coop_mode='flat',
-               sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor=False, coop_loss=False, **kwargs):
+               sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor='default', sa_level=1, kernels=None,
+               coop_loss=False, **kwargs):
     net = YOLOV3(stages, filters, anchors, strides,
                  classes=classes, coop_configs=coop_configs, label_smooth=label_smooth, nms_mode=nms_mode,
                  coop_mode=coop_mode, sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh,
-                 specific_anchor=specific_anchor, coop_loss=coop_loss, **kwargs)
+                 specific_anchor=specific_anchor, sa_level=sa_level, kernels=kernels, coop_loss=coop_loss, **kwargs)
     if pretrained:
         from gluoncv.model_zoo.model_store import get_model_file
         full_name = '_'.join(('yolo3', name, dataset))
@@ -521,7 +330,8 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, d
 # to build the backbone for yolov3
 def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=BatchNorm, norm_kwargs=None,
                          coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
-                         sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor=False, coop_loss=False, **kwargs):
+                         sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor='default', sa_level=1, sq_level=5,
+                         coop_loss=False, **kwargs):
     """
     Returns
     -------
@@ -534,13 +344,22 @@ def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=Batc
         pretrained=pretrained_base, norm_layer=norm_layer, norm_kwargs=norm_kwargs, **kwargs)
     stages = [base_net.features[:15], base_net.features[15:24], base_net.features[24:]]
     anchors = [[10, 13, 16, 30, 33, 23], [30, 61, 62, 45, 59, 119], [116, 90, 156, 198, 373, 326]]
+    rectangle = [[(3, 2), (6, 3), (4, 6)], [(4, 2), (3, 4), (8, 4)], [(3, 4), (7, 5), (10, 12)]]
+    rectanglefix = [[(3, 2), (4, 2), (2, 3)], [(4, 2), (3, 4), (4, 2)], [(3, 4), (5, 4), (5, 6)]]
+    square = [sq_level] * 3  # just placeholder
+    if specific_anchor == 'rectangle':
+        kernels = rectangle
+    elif specific_anchor =='rectanglefix':
+        kernels = rectanglefix
+    else:
+        kernels = square
     strides = [8, 16, 32]
     classes = COCODetection.CLASSES
     return get_yolov3(
         'darknet53', stages, [512, 256, 128], anchors, strides, classes, coop_configs, 'coco', pretrained=pretrained,
         norm_layer=norm_layer, norm_kwargs=norm_kwargs, label_smooth=label_smooth, nms_mode=nms_mode, coop_mode=coop_mode,
-        sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, specific_anchor=specific_anchor,
-        coop_loss=coop_loss, **kwargs)
+        sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, specific_anchor=specific_anchor, sa_level=sa_level,
+        kernels=kernels, coop_loss=coop_loss, **kwargs)
 
 
 _models = {
