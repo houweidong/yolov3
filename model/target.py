@@ -311,40 +311,46 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             box_index_np = box_index.asnumpy()
             mask_obj_np = mask_obj.asnumpy()
 
-            for b in range(matches.shape[0]):
-                for m in range(matches.shape[1]):
-                    if valid_gts[b, m] < 1:
-                        break
+            if self._equal_train:
+                for b in range(matches.shape[0]):
+                    for m in range(matches.shape[1]):
+                        if valid_gts[b, m] < 1:
+                            break
 
-                    # use match to reduce time but box_index_np[b, index, :, 0]
-                    match9 = int(matches[b, m])
-                    match = match9 % 3
-                    nlayer = np.nonzero(num_anchors > match9)[0][0]
-                    index = slice(_offsets[nlayer], _offsets[nlayer + 1])
-                    max_level = self._coop_configs[nlayer][-1]
-                    cond = (box_index_np[b, index, match, 0] == m) & (mask_obj_np[b, index, match, 0] <= max_level)
-                    his, _ = np.histogram(mask_obj_np[b, index, match, 0][cond], [i+1 for i in range(max_level)] + [max_level],
-                                          (1, max_level))
-                    for index_cfg, cfg in enumerate(self._coop_configs[nlayer]):
-                        # this target with the cfg has been covered by other target
-                        if sum(his[:cfg]) == 0:
-                            continue
+                        # use match to reduce time but box_index_np[b, index, :, 0]
+                        match9 = int(matches[b, m])
+                        match = match9 % 3
+                        nlayer = np.nonzero(num_anchors > match9)[0][0]
+                        index = slice(_offsets[nlayer], _offsets[nlayer + 1])
+                        max_level = self._coop_configs[nlayer][-1]
+                        cond = (box_index_np[b, index, match, 0] == m) & (mask_obj_np[b, index, match, 0] <= max_level)
+                        his, _ = np.histogram(mask_obj_np[b, index, match, 0][cond], [i+1 for i in range(max_level)] + [max_level],
+                                              (1, max_level))
+                        for index_cfg, cfg in enumerate(self._coop_configs[nlayer]):
+                            # this target with the cfg has been covered by other target
+                            if sum(his[:cfg]) == 0:
+                                continue
 
-                        # old is bad
-                        #  = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
-                        # need_add = sum(weight_default[:cfg][his[:cfg] == 0])
-                        # weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
-                        # if not self._equal_train:
-                        #     weight_list[:] = 1
-                        # weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
-                        #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
+                            # old is bad
+                            #  = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
+                            # need_add = sum(weight_default[:cfg][his[:cfg] == 0])
+                            # weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
+                            # if not self._equal_train:
+                            #     weight_list[:] = 1
+                            # weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
+                            #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
 
-                        # new to try
-                        weight_list = np.ones_like(his[:cfg]) * (cfg**2) / sum(his[:cfg])
-                        if not self._equal_train:
-                            weight_list[:] = 1
-                        weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
-                            == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
+                            # new to try
+                            weight_list = np.ones_like(his[:cfg]) * (cfg**2) / sum(his[:cfg])
+                            if not self._equal_train:
+                                weight_list[:] = 1
+                            weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
+                                == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
+            else:
+                for i, cfgs in enumerate(self._coop_configs):
+                    index = slice(_offsets[i], _offsets[i + 1])
+                    for j, cfg in enumerate(cfgs):
+                        weights_bl[:, index, :, j, :] = np.where(mask_obj_np[:, index, :, :] <= cfg, 1, 0)
             # since some stages won't see partial anchors, so we have to slice the correct targets
             # objectness = self._slice(objectness, num_anchors, num_offsets)
             # center_targets = self._slice(center_targets, num_anchors, num_offsets)
