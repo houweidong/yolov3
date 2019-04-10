@@ -322,8 +322,8 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                 for j, cfgs in enumerate(cfgss):
                     mask_cls[:, index, j, :] = mask_cls[:, index, j, :] - (weights_bl[:, index, j, 0, :] >= self._threshold_cls[i, j, 0] / 2) * 100
                     for k, cfg in enumerate(cfgs):
-                        cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2) * \
-                                      (distance_margin[:, index, j, k, :] > self._margin[i, j, k])
+                        cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2) * ((distance_margin[:, index, j, k, :]
+                                       > self._margin[i, j, k]) + (weights_bl[:, index, j, k, :] <= 0.5))
                         weights_bl[:, index, j, k, :] = nd.where(cond_modify, nd.ones_like(cond_modify), nd.zeros_like(cond_modify))
 
             if self._equal_train:
