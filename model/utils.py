@@ -26,7 +26,7 @@ def config(args):
             raise Exception('coop configs should have three layers!')
         for config in configs:
             # coop_configs.append(tuple(sorted(map(int, filter(None, config.split(' '))))))
-            config = list(map(int, filter(None, config.split(' '))))
+            config = list(map(float, filter(None, config.split(' '))))
             if len(config) < 3:
                 config = config * 3
             else:
@@ -35,8 +35,8 @@ def config(args):
         return np.array(cfg_list).reshape((3, 3, -1))
 
     args.coop_cfg = cfg(args.coop_cfg)
-    args.margin = cfg(args.margin)
-    args.thre_cls = cfg(args.thre_cls)
+    args.margin = cfg(args.margin) if hasattr(args, 'margin') else None
+    args.thre_cls = cfg(args.thre_cls) if hasattr(args, 'thre_cls') else None
 
 
 def bbox_iou(box1, box2, x1y1x2y2=True):

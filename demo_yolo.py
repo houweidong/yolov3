@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from model.model import get_model
 from gluoncv.data import COCODetection
 import numpy as np
-from model.utils import get_coop_config
+from model.utils import config
 import cv2
 from mxnet import nd
 from utils.timer import Timer
@@ -24,7 +24,7 @@ def forward(image, ctx, args):
     # select args.classes in ids
     if args.classes:
         cla_ids = []
-        str.strip
+        # str.strip
         clses = list(map(str.strip, filter(None, args.classes.split(','))))
         cond_a = np.zeros_like(ids, dtype=np.bool)
         for cls in clses:
@@ -102,12 +102,12 @@ if __name__ == '__main__':
     if args.pretrained.lower() in ['true', '1', 'yes', 't']:
         net = gcv.model_zoo.get_model(args.network, pretrained=True)
     else:
-        coop_cfg = get_coop_config(args.coop_cfg)
-        net = get_model(args.network, pretrained_base=False, coop_configs=coop_cfg, nms_mode=args.nms_mode)
+        config(args)
+        net = get_model(args.network, pretrained_base=False, coop_configs=args.coop_cfg, nms_mode=args.nms_mode)
         net.initialize()
         net.load_parameters(args.pretrained, allow_missing=True, ignore_extra=True)
         # print('wo')
-    net.set_nms(0.99, 200)
+    net.set_nms(0.9, 200)
     net.collect_params().reset_ctx(ctx=ctx)
 
     if args.demo:
