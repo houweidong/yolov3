@@ -47,16 +47,16 @@ class SelfLoss(Loss):
         # self._l2_loss = gluon.loss.L2Loss()
         self._label_smooth = label_smooth
         self._coop_configs = coop_configs
-        self.order_sig_config = sorted(set(coop_configs))
-        self._dynamic_target = SelfDynamicTargetGeneratorSimple(num_class, ignore_iou_thresh, len(coop_configs))
-        factor_list, center_list, self._factor_max, self._center_max = \
-            get_factor(coop_configs, coop_mode, sigma_weight)
-        with self.name_scope():
-            factor_np = np.array(factor_list)[np.newaxis, np.newaxis, :, np.newaxis]
-            self.factor = self.params.get_constant('factor_%d' % (index), factor_np)
+        # self.order_sig_config = sorted(set(coop_configs))
+        self._dynamic_target = SelfDynamicTargetGeneratorSimple(num_class, ignore_iou_thresh, coop_configs.shape[-1])
+        # factor_list, center_list, self._factor_max, self._center_max = \
+        #     get_factor(coop_configs, coop_mode, sigma_weight)
+        # with self.name_scope():
+        #     factor_np = np.array(factor_list)[np.newaxis, np.newaxis, :, np.newaxis]
+        #     self.factor = self.params.get_constant('factor_%d' % (index), factor_np)
 
     def hybrid_forward(self, F, objness, box_centers, box_scales, cls_preds, box_preds, coop, gt_boxes, objness_t,
-                       center_t, scale_t, weight_t, cls_mask, box_index, weights_balance, factor):
+                       center_t, scale_t, weight_t, cls_mask, box_index, weights_balance):
         """Compute YOLOv3 losses.
 
         Parameters
@@ -101,14 +101,14 @@ class SelfLoss(Loss):
 
         batch_ious, dynamic_objness = self._dynamic_target(box_preds, gt_boxes)
         objness_t, center_t, scale_t, weight_t, box_index = (F.tile(F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]),
-            dim=1), reps=(len(self._coop_configs), 1)) for p in [objness_t, center_t, scale_t, weight_t, box_index])
+            dim=1), reps=(self._coop_configs.shape[-1], 1)) for p in [objness_t, center_t, scale_t, weight_t, box_index])
         weights_balance, cls_mask = (F.concat(*(p.split(num_outputs=21, axis=1)[self._target_slice]), dim=1)
                                      for p in [weights_balance, cls_mask])
         # cls_mask = F.concat(*(cls_mask.split(num_outputs=21, axis=1)[self._target_slice]), dim=1)
-        # if len(self._coop_configs) != 1:
+        # if self._coop_configs.shape[-1] != 1:
         #     batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance = \
-        #         ([pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, len(self._coop_configs), 0)).split(
-        #             num_outputs=len(self._coop_configs), axis=2)] for p in
+        #         ([pp.reshape((0, -3, -1)) for pp in p.reshape((0, -4, -1, self._coop_configs.shape[-1], 0)).split(
+        #             num_outputs=self._coop_configs.shape[-1], axis=2)] for p in
         #          [batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance])
         # else:
         #     batch_ious, dynamic_objness, objness, box_centers, box_scales, weights_balance = \
@@ -162,7 +162,7 @@ class SelfLoss(Loss):
 
             # obj just a weight integration(mixup weight, equal train weight, and grid weight(flat convex concave))
             mask = weights_balance != 0
-            obj = F.where(mask, F.broadcast_mul(F.broadcast_mul(objness_t, factor), weights_balance), dynamic_objness)
+            obj = F.where(mask, F.broadcast_mul(objness_t, weights_balance), dynamic_objness)
             # mask2 =
             # ctr = F.where(mask2, (center_t + 0.5 * level) / float(level), F.zeros_like(mask2))
             # similar to label smooth, here smooth the 0 and 1 label for x y
@@ -182,17 +182,20 @@ class SelfLoss(Loss):
 
         obj_loss = F.broadcast_mul(self._sigmoid_ce(objness, hard_objness_t, new_objness_mask), denorm)
         center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers, F.broadcast_div(F.broadcast_add(
-            center_t, 0.5 * coop), coop), F.broadcast_mul(weight, coop**0.5)), denorm*2)
+            center_t, 0.5 * coop), coop), F.broadcast_mul(weight, coop**0.3)), denorm*2)
         scale_loss = F.broadcast_mul(self._l1_loss(box_scales, scale_t, weight), denorm * 2)
 
         with autograd.pause():
-            if len(self._coop_configs) != 1:
-                weights_balance, objness_t = [p.split(num_outputs=len(self._coop_configs),
-                    axis=2)[len(self._coop_configs) - 1] for p in [weights_balance, objness_t]]
+            if self._coop_configs.shape[-1] != 1:
+                # weights_balance, objness_t = [p.split(num_outputs=self._coop_configs.shape[-1],
+                #     axis=2)[self._coop_configs.shape[-1] - 1] for p in [weights_balance, objness_t]]
+                objness_t = objness_t.split(num_outputs=self._coop_configs.shape[-1], axis=2)[0]
             # weights_balance = weights_balance.reshape((0, -1, 0))
-            mask3 = cls_mask <= self._coop_configs[-1]
+            # mask3 = cls_mask <= self._coop_configs[-1]
+            mask3 = cls_mask >= 0
             # mask4 = F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,))
-            cls = F.where(mask3, F.ones_like(mask3), F.zeros_like(mask3))
+            # cls = F.where(mask3, F.ones_like(mask3), F.zeros_like(mask3))
+            cls = F.one_hot(cls_mask.squeeze(axis=-1), depth=self._num_class)
             smooth_weight = 1. / self._num_class
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
@@ -206,8 +209,7 @@ class SelfLoss(Loss):
             #     grid_weight = (1 / (2 * obj_mask - 1)) * self._factor_max
             # else:
             #     raise Exception('coop_mode error in loss layer when compute cls loss')
-            class_mask = F.broadcast_mul(F.max(mask3, axis=-1, keepdims=True).tile(reps=(self._num_class,)),
-                                         objness_t * self._factor_max * weights_balance)
+            class_mask = F.broadcast_mul(mask3.tile(reps=(self._num_class,)), objness_t)
         # cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds, cls,
         #     (objness_t * grid_weight * weights_balance[-1]).tile(reps=(self._num_class,))), denorm_class)
         cls_loss = F.broadcast_mul(self._sigmoid_ce(cls_preds.expand_dims(-2), cls, class_mask), denorm_class)

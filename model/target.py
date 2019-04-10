@@ -41,7 +41,7 @@ class SelfDefaultTrainTransform(object):
     """
 
     def __init__(self, width, height, net=None, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), mixup=False,
-                 coop_configs=((1,), (1,), (1,)), equal_train=False, margin=0.5, **kwargs):
+                 coop_configs=None, equal_train=False, margin=0.5, thre_cls=None, **kwargs):
         self._width = width
         self._height = height
         self._mean = mean
@@ -58,7 +58,7 @@ class SelfDefaultTrainTransform(object):
         with autograd.train_mode():
             self._anchors, self._offsets, self._feat_maps = net(self._fake_x)
         self._target_generator = SelfPrefetchTargetGenerator(
-            num_class=len(net.classes), coop_configs=coop_configs, equal_train=equal_train, margin=margin, **kwargs)
+            num_class=len(net.classes), coop_configs=coop_configs, equal_train=equal_train, margin=margin, thre_cls=thre_cls, **kwargs)
 
     def set_prob_fit(self, prob_fit=False):
         """Set mixup random sampler, use None to disable.
@@ -137,8 +137,8 @@ class SelfPrefetchTargetGenerator(gluon.Block):
 
     """
 
-    def __init__(self, num_class, prob_fit=False, coop_configs=((1,), (1,), (1,)), equal_train=False,
-                 margin=0.5, **kwargs):
+    def __init__(self, num_class, prob_fit=False, coop_configs=None, equal_train=False,
+                 margin=None, thre_cls=None, **kwargs):
         super(SelfPrefetchTargetGenerator, self).__init__(**kwargs)
         self._prob_fit = prob_fit
         self._equal_train = equal_train
@@ -146,7 +146,9 @@ class SelfPrefetchTargetGenerator(gluon.Block):
         self.bbox2center = BBoxCornerToCenter(axis=-1, split=True)
         self.bbox2corner = BBoxCenterToCorner(axis=-1, split=False)
         self._coop_configs = coop_configs[::-1]
-        self._max_thickness = max([len(cfg) for cfg in coop_configs])
+        self._max_thickness = coop_configs.shape[-1]
+        self._threshold_cls = thre_cls
+        # if less than 3, the len is 1
         self._margin = margin
 
     def set_prob_fit(self, prob_fit=False):
@@ -190,12 +192,12 @@ class SelfPrefetchTargetGenerator(gluon.Block):
 
         """
         assert isinstance(anchors, (list, tuple))
-        offsets = [nd.min_axis(offset, axis=-2, keepdims=False) for offset in offsets]
+        # offsets = [nd.min_axis(offset, axis=-2, keepdims=False) for offset in offsets]
         all_anchors = nd.concat(*[a.reshape(-1, 2) for a in anchors], dim=0)
         assert isinstance(offsets, (list, tuple))
-        all_offsets = nd.concat(*[o.reshape(-1, 2) for o in offsets], dim=0)
+        all_offsets = nd.concat(*[o.reshape(-1, ) for o in offsets], dim=0)
         num_anchors = np.cumsum([a.size // 2 for a in anchors])
-        num_offsets = np.cumsum([o.size // 2 for o in offsets])
+        num_offsets = np.cumsum([o.size for o in offsets])
         _offsets = [0] + num_offsets.tolist()
         assert isinstance(xs, (list, tuple))
         assert len(xs) == len(anchors) == len(offsets)
@@ -214,14 +216,14 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             scale_targets = nd.zeros_like(center_targets)
             weights = nd.zeros_like(center_targets)
             objectness = nd.zeros_like(weights.split(axis=-1, num_outputs=2)[0])
-            mask_obj = nd.ones_like(objectness) * 1000
+            # mask_obj = nd.ones_like(objectness) * 1000
             distance = nd.ones_like(objectness) * 1000
-            distance_margin = nd.ones_like(objectness) * 1000
-            mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
-            mask_cls[:] = 1000  # prefill 1000 for ignores
+            # mask_cls = nd.one_hot(objectness.squeeze(axis=-1), depth=self._num_class)
+            # mask_cls[:] = 1000  # prefill 1000 for ignores
+            mask_cls = nd.zeros_like(objectness)
             box_index = nd.ones_like(objectness) * -1
-            weights_bl = nd.zeros_like(objectness.expand_dims(-2).repeat(repeats=self._max_thickness, axis=-2)).asnumpy()
-
+            weights_bl = nd.ones_like(objectness.expand_dims(-2).repeat(repeats=self._max_thickness, axis=-2)) * 1000
+            distance_margin = nd.ones_like(weights_bl) * 1000
             # for each ground-truth, find the best matching anchor within the particular grid
             # for instance, center of object 1 reside in grid (3, 4) in (16, 16) feature map
             # then only the anchor in (3, 4) is going to be matched
@@ -266,15 +268,15 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     grid_x, grid_y = nd.array(grid_x).reshape(-1), nd.array(grid_y).reshape(-1)
                     distance_x, distance_y = nd.abs(grid_x - loc_x_point), nd.abs(grid_y - loc_y_point)
                     distance_max = nd.array(nd.maximum(distance_x, distance_y))
-                    seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
+                    # seal = nd.clip(nd.ceil(distance_max * 2), 1, 1000)  # 1000 just represent inf
                     dis = nd.sqrt(nd.square(distance_x) + nd.square(distance_y))
 
                     index = slice(_offsets[nlayer], _offsets[nlayer + 1])
                     cond = dis < distance[b, index, match, 0]
 
                     dis_margin = nd.abs(distance[b, index, match, 0] - dis)
-                    cond_mg = (dis_margin < distance_margin[b, index, match, 0]) + cond
-                    distance_margin[b, index, match, 0] = nd.where(cond_mg, dis_margin, distance_margin[b, index, match, 0])
+                    cond_mg = ((dis_margin < distance_margin[b, index, match, 0, 0]) + cond).expand_dims(-1)
+                    distance_margin[b, index, match, :, 0] = nd.where(cond_mg, dis_margin.expand_dims(-1), distance_margin[b, index, match, 0:1, 0])
                     tx = loc_x_point - grid_x
                     ty = loc_y_point - grid_y
                     tw = nd.ones_like(cond) * np.log(max(gtw, 1) / np_anchors[match9, 0])
@@ -289,68 +291,79 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                     weights[b, index, match, :] = nd.where(cond.expand_dims(-1),
                                                            twg.expand_dims(-1), weights[b, index, match, 0:1])
                     objectness[b, index, match, 0] = nd.where(cond, tobj, objectness[b, index, match, 0])
-                    mask_obj[b, index, match, 0] = nd.where(cond, seal, mask_obj[b, index, match, 0])
-
-                    cond_class = cond.expand_dims(-1).repeat(repeats=self._num_class, axis=-1)
-                    mask_cls[b, index, match, :] = \
-                        nd.where(cond_class, nd.ones_like(cond_class) * 1000, mask_cls[b, index, match, :])
-                    mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
-                        nd.where(cond, seal, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+                    # mask_obj[b, index, match, 0] = nd.where(cond, distance_max, mask_obj[b, index, match, 0])
+                    weights_bl[b, index, match, :, 0] = nd.where(cond.expand_dims(-1), distance_max.expand_dims(-1),
+                                                                 weights_bl[b, index, match, 0:1, 0])
+                    # cond_class = cond.expand_dims(-1).tile(reps=(self._num_class, ))
+                    # mask_cls[b, index, match, :] = \
+                    #     nd.where(cond_class, nd.ones_like(cond_class) * 1000, mask_cls[b, index, match, :])
+                    # mask_cls[b, index, match, int(np_gt_ids[b, m, 0])] = \
+                    #     nd.where(cond, distance_max, mask_cls[b, index, match, int(np_gt_ids[b, m, 0])])
+                    mask_cls[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * int(np_gt_ids[b, m, 0]), mask_cls[b, index, match, 0])
 
                     # if self._prob_fit:
                     box_index[b, index, match, 0] = nd.where(cond, nd.ones_like(cond) * m, box_index[b, index, match, 0])
                     # distance[b, index, match, 0] = nd.where(cond, distance_max, distance[b, index, match, 0])
                     distance[b, index, match, 0] = nd.where(cond, dis, distance[b, index, match, 0])
-
             # to modify the mask for margin the grid
-            cond_modify = (distance_margin < self._margin) * (mask_obj != 1)
-            mask_obj = nd.where(cond_modify, nd.ones_like(cond_modify) * 1000, mask_obj)
+            # for i, margins in enumerate(self._margin):
+            #     index = slice(_offsets[i], _offsets[i + 1])
+            #     for j, margin in enumerate(margins):
+            #         cond_modify = distance_margin[:, index, j, 0] < margin
+            #         mask_obj[:, index, j, 0] = nd.where(cond_modify, nd.ones_like(cond_modify) * 1000, mask_obj[:, index, j, 0])
 
             # 100 just for long enough
             # weight_default = np.arange(1, 100, 2)
-            box_index_np = box_index.asnumpy()
-            mask_obj_np = mask_obj.asnumpy()
+            # box_index_np = box_index.asnumpy()
+            # mask_obj_np = mask_obj.asnumpy()
+
+            for i, cfgss in enumerate(self._coop_configs):
+                index = slice(_offsets[i], _offsets[i + 1])
+                for j, cfgs in enumerate(cfgss):
+                    mask_cls[:, index, j, :] = mask_cls[:, index, j, :] - (weights_bl[:, index, j, 0, :] >= self._threshold_cls[i, j, 0] / 2) * 100
+                    for k, cfg in enumerate(cfgs):
+                        cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2) * \
+                                      (distance_margin[:, index, j, k, :] > self._margin[i, j, k])
+                        weights_bl[:, index, j, k, :] = nd.where(cond_modify, nd.ones_like(cond_modify), nd.zeros_like(cond_modify))
 
             if self._equal_train:
-                for b in range(matches.shape[0]):
-                    for m in range(matches.shape[1]):
-                        if valid_gts[b, m] < 1:
-                            break
+                # TODO equal_train
+                pass
+                # for b in range(matches.shape[0]):
+                #     for m in range(matches.shape[1]):
+                #         if valid_gts[b, m] < 1:
+                #             break
+                #
+                #         # use match to reduce time but box_index_np[b, index, :, 0]
+                #         match9 = int(matches[b, m])
+                #         match = match9 % 3
+                #         nlayer = np.nonzero(num_anchors > match9)[0][0]
+                #         index = slice(_offsets[nlayer], _offsets[nlayer + 1])
+                #         max_level = self._coop_configs[nlayer, -1, -1]
+                #         cond = (box_index_np[b, index, match, 0] == m) & (mask_obj_np[b, index, match, 0] <= max_level)
+                #         his, _ = np.histogram(mask_obj_np[b, index, match, 0][cond], [i+1 for i in range(max_level)] + [max_level],
+                #                               (1, max_level))
+                #         for index_cfg, cfg in enumerate(self._coop_configs[nlayer]):
+                #             # this target with the cfg has been covered by other target
+                #             if sum(his[:cfg]) == 0:
+                #                 continue
+                #
+                #             # old is bad
+                #             #  = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
+                #             # need_add = sum(weight_default[:cfg][his[:cfg] == 0])
+                #             # weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
+                #             # if not self._equal_train:
+                #             #     weight_list[:] = 1
+                #             # weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
+                #             #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
+                #
+                #             # new to try
+                #             weight_list = np.ones_like(his[:cfg]) * (cfg**2) / sum(his[:cfg])
+                #             if not self._equal_train:
+                #                 weight_list[:] = 1
+                #             weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
+                #                 == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
 
-                        # use match to reduce time but box_index_np[b, index, :, 0]
-                        match9 = int(matches[b, m])
-                        match = match9 % 3
-                        nlayer = np.nonzero(num_anchors > match9)[0][0]
-                        index = slice(_offsets[nlayer], _offsets[nlayer + 1])
-                        max_level = self._coop_configs[nlayer][-1]
-                        cond = (box_index_np[b, index, match, 0] == m) & (mask_obj_np[b, index, match, 0] <= max_level)
-                        his, _ = np.histogram(mask_obj_np[b, index, match, 0][cond], [i+1 for i in range(max_level)] + [max_level],
-                                              (1, max_level))
-                        for index_cfg, cfg in enumerate(self._coop_configs[nlayer]):
-                            # this target with the cfg has been covered by other target
-                            if sum(his[:cfg]) == 0:
-                                continue
-
-                            # old is bad
-                            #  = np.where(his[:cfg] == 0, 0, weight_default[:cfg] / np.where(his[:cfg] == 0, 1, his[:cfg]))
-                            # need_add = sum(weight_default[:cfg][his[:cfg] == 0])
-                            # weight_list = weight_list * (need_add / (cfg ** 2 - need_add) + 1)
-                            # if not self._equal_train:
-                            #     weight_list[:] = 1
-                            # weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
-                            #     == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
-
-                            # new to try
-                            weight_list = np.ones_like(his[:cfg]) * (cfg**2) / sum(his[:cfg])
-                            if not self._equal_train:
-                                weight_list[:] = 1
-                            weights_bl[b, index, match, index_cfg, 0] = np.select([cond & (mask_obj_np[b, index, match, 0]
-                                == i+1) for i in range(cfg)], weight_list, weights_bl[b, index, match, index_cfg, 0])
-            else:
-                for i, cfgs in enumerate(self._coop_configs):
-                    index = slice(_offsets[i], _offsets[i + 1])
-                    for j, cfg in enumerate(cfgs):
-                        weights_bl[:, index, :, j, :] = np.where(mask_obj_np[:, index, :, :] <= cfg, 1, 0)
             # since some stages won't see partial anchors, so we have to slice the correct targets
             # objectness = self._slice(objectness, num_anchors, num_offsets)
             # center_targets = self._slice(center_targets, num_anchors, num_offsets)
@@ -360,13 +373,14 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             # mask_cls = self._slice(mask_cls, num_anchors, num_offsets)
             # box_index = self._slice(box_index, num_anchors, num_offsets)
             # weights_bl = self._slice(nd.array(weights_bl), num_anchors, num_offsets, True)
+            # decide to train class in which condition(same with the max level or just one grid)
             objectness = objectness.reshape((0, -3, 1, -1))
             center_targets = center_targets.reshape((0, -3, 1, -1))
             scale_targets = scale_targets.reshape((0, -3, 1, -1))
             weights = weights.reshape((0, -3, 1, -1))
-            mask_cls = mask_cls.reshape((0, -3, 1, -1))
             box_index = box_index.reshape((0, -3, 1, -1))
-            weights_bl = nd.array(weights_bl).reshape((0, -3, 0, 0))
+            weights_bl = weights_bl.reshape((0, -3, 0, 0))
+            mask_cls = mask_cls.reshape((0, -3, 1, -1))
             if not self._prob_fit:
                 box_index[:] = -1
         return objectness, center_targets, scale_targets, weights, mask_cls, box_index, weights_bl

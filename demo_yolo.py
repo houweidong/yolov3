@@ -104,9 +104,10 @@ if __name__ == '__main__':
     else:
         coop_cfg = get_coop_config(args.coop_cfg)
         net = get_model(args.network, pretrained_base=False, coop_configs=coop_cfg, nms_mode=args.nms_mode)
-        net.load_parameters(args.pretrained)
+        net.initialize()
+        net.load_parameters(args.pretrained, allow_missing=True, ignore_extra=True)
         # print('wo')
-    net.set_nms(0.45, 200)
+    net.set_nms(0.99, 200)
     net.collect_params().reset_ctx(ctx=ctx)
 
     if args.demo:

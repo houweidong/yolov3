@@ -60,12 +60,14 @@ class YOLOOutputV3(gluon.HybridBlock):
         to export to symbol so we can run it in c++, Scalar, etc.
     """
 
-    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=(1,),
+    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=None,
                  alloc_size=(128, 128), label_smooth=True, specific_anchor='default', sa_level=1, kernels=None,
                  coop_loss=False, norm_layer=BatchNorm, norm_kwargs=None, **kwargs):
         super(YOLOOutputV3, self).__init__(**kwargs)
         anchors = np.array(anchors).astype('float32')
-        self._xywho_num = len(coop_config)
+        # suppose we don't config the xywho numbers more than or equal with 3
+        assert len(coop_config) % 3 == 0
+        self._xywho_num = len(coop_config) // 3
         self._classes = num_class
 
         self._coop_loss = coop_loss
@@ -94,7 +96,8 @@ class YOLOOutputV3(gluon.HybridBlock):
             # expand dims to (1, 1, n, n, 2) so it's easier for broadcasting
             offsets = np.expand_dims(np.expand_dims(offsets, axis=0), axis=0)
             self.offsets_self = self.params.get_constant('offset_%d' % (index), offsets)
-            horizontal_sig_levels = np.array(coop_config)[np.newaxis, np.newaxis, np.newaxis, :, np.newaxis]
+            horizontal_sig_levels = np.tile(np.array(coop_config)[np.newaxis, np.newaxis, :, :, np.newaxis],
+                                            reps=(alloc_size[0], alloc_size[1], 1, 1, 1))
             self.horizontal_sig_levels = self.params.get_constant('sig_level_%d' % (index), horizontal_sig_levels)
 
     def reset_class(self, classes, reuse_weights=None):
@@ -183,6 +186,8 @@ class YOLOOutputV3(gluon.HybridBlock):
 
         # valid offsets, (1, 1, height, width, 2)
         offsets = F.slice_like(offsets_self, x * 0, axes=(2, 3))
+        horizontal_sig_levels = F.slice_like(horizontal_sig_levels, F.transpose(x * 0, axes=(2, 3, 0, 1)),
+                                             axes=(0, 1)).reshape((-3, 0, 0, 0)).expand_dims(axis=0)
         # reshape to (1, height*width, 1, 2)
         offsets = F.broadcast_sub(offsets.reshape((1, -1, 1, 2)).expand_dims(-2) + 0.5, 0.5 * horizontal_sig_levels)
 
@@ -204,7 +209,7 @@ class YOLOOutputV3(gluon.HybridBlock):
                 return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox,
                                   horizontal_sig_levels.reshape((0, -3, -1, 1)), *args)
             else:
-                return anchors_self, offsets
+                return anchors_self, offsets.slice(begin=(None, None, 0, 0, 0), end=(None, None, 1, 1, 1))
 
         # # prediction per class
         # bboxes = F.tile(bbox, reps=(self._classes, 1, 1, 1, 1))

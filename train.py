@@ -19,7 +19,7 @@ from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
 from gluoncv.utils import LRScheduler
-from model.utils import LossMetricSimple, get_coop_config, self_box_nms
+from model.utils import LossMetricSimple, config, self_box_nms
 from model.target import SelfDefaultTrainTransform
 from mxnet import nd
 
@@ -93,10 +93,12 @@ def parse_args():
     parser.add_argument('--fit-epoch', type=int, default=-1,
                         help='epoch at which open objectness probability fit. default -1, always close fit training')
     parser.add_argument('--label-smooth', action='store_true', help='Use label smoothing.')
-    parser.add_argument('--coop-cfg', type=str, default='1, 1, 1',
+    parser.add_argument('--coop-cfg', type=str, default='1',
                         help='coop configs. "," separate different output head, '
-                             '" " separate different sig level in a same output layer. '
+                             '" " separate different anchor and sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
+    parser.add_argument('--margin', type=str, default='0')
+    parser.add_argument('--thre-cls', type=str, default='1')
     parser.add_argument('--nms-mode', type=str, default='Default', choices=['Default', 'Exclude', 'Merge'])
     parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
@@ -109,7 +111,6 @@ def parse_args():
     parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
     parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
     parser.add_argument('--ignore-iou-thresh', type=float, default=0.7)
-    parser.add_argument('--margin', type=float, default=0)
     parser.add_argument('--specific-anchor', type=str, default='default',
                         choices=['default', 'rectangle', 'rectanglefix', 'square'])
     parser.add_argument('--sa-level', type=int, default=2, choices=[1, 2, 3])
@@ -150,11 +151,11 @@ def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_
                                                          range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(train_dataset.transform(SelfDefaultTrainTransform(width, height, net,
-            mixup=args.mixup, coop_configs=get_coop_config(args.coop_cfg), equal_train=args.equal_train, margin=args.margin)),
+            mixup=args.mixup, coop_configs=args.coop_cfg, equal_train=args.equal_train, margin=args.margin, thre_cls=args.thre_cls)),
             batch_size, True, batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
     else:
-        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, coop_configs=get_coop_config(args.coop_cfg),
-            mixup=args.mixup, equal_train=args.equal_train, margin=args.margin) for x in range(10, 20)]
+        transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, coop_configs=args.coop_cfg,
+            mixup=args.mixup, equal_train=args.equal_train, margin=args.margin, thre_cls=args.thre_cls) for x in range(10, 20)]
         train_loader = RandomTransformDataLoader(
             transform_fns, train_dataset, batch_size=batch_size, interval=10, last_batch='rollover',
             shuffle=True, batchify_fn=batchify_fn, num_workers=num_workers)
@@ -182,7 +183,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
     # set nms threshold and topk constraint
     net.set_nms(nms_thresh=0.45, nms_topk=400)
     mx.nd.waitall()
-    net.hybridize()
+    # net.hybridize()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0, even_split=False)
         label = gluon.utils.split_and_load(batch[1], ctx_list=ctx, batch_axis=0, even_split=False)
@@ -226,7 +227,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
     return eval_metric.get()
 
 
-def train(net, train_data, val_data, eval_metric, ctx, args):
+def train(net, train_data, val_data, eval_metric, ctx, argsj, logeer):
     """Training pipeline"""
     net.collect_params().reset_ctx(ctx)
     if args.no_wd:
@@ -250,7 +251,6 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         kvstore='local')
 
     # metrics
-    coop_cfg = get_coop_config(args.coop_cfg)
     # metric_loss = LossMetric(get_order_config(coop_cfg))
     metric_loss = LossMetricSimple()
     # metrics
@@ -259,14 +259,6 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
     # scale_metrics = mx.metric.Loss('BoxScaleLoss')
     # cls_metrics = mx.metric.Loss('ClassLoss')
 
-    # set up logger
-    logging.basicConfig()
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    log_file_path = args.save_prefix + '_train.log'
-    fh = logging.FileHandler(os.path.join(args.results_dir, log_file_path))
-    logger.addHandler(fh)
-    logger.info(args)
     logger.info('Start training from [Epoch {}]'.format(args.start_epoch))
     best_map = [0]
     for epoch in range(args.start_epoch, args.epochs):
@@ -290,7 +282,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args):
         tic = time.time()
         btic = time.time()
         mx.nd.waitall()
-        net.hybridize()
+        # net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
             # test += 1
@@ -342,7 +334,15 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in args.gpus.split(',') if i.strip()]
     ctx = ctx if ctx else [mx.cpu()]
 
-    coop_configs = get_coop_config(args.coop_cfg)
+    # set up logger
+    logging.basicConfig()
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    log_file_path = args.save_prefix + '_train.log'
+    fh = logging.FileHandler(os.path.join(args.results_dir, log_file_path))
+    logger.addHandler(fh)
+    logger.info(args)
+    config(args)
 
     # network
     net_name = '_'.join(('yolo3', args.network, args.dataset))
@@ -350,14 +350,14 @@ if __name__ == '__main__':
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained=args.pretrained, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=coop_configs, label_smooth=args.label_smooth,
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
         async_net = get_model(net_name, pretrained_base=False, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)  # used by cpu worker
     else:
-        net = get_model(net_name, pretrained=args.pretrained, coop_configs=coop_configs, label_smooth=args.label_smooth,
+        net = get_model(net_name, pretrained=args.pretrained, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
@@ -377,4 +377,4 @@ if __name__ == '__main__':
         async_net, train_dataset, val_dataset, args.data_shape, args.batch_size, args.num_workers, args)
 
     # training
-    train(net, train_data, val_data, eval_metric, ctx, args)
+    train(net, train_data, val_data, eval_metric, ctx, args, logger)

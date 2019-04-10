@@ -10,7 +10,6 @@ from mxnet.gluon.nn import BatchNorm
 from gluoncv.model_zoo.yolo.darknet import _conv2d, darknet53
 from gluoncv.model_zoo.yolo.yolo_target import YOLOV3TargetMerger
 # from model.loss import SelfLoss
-from model.utils import get_order_config
 from model.model_utils import YOLOOutputV3
 from gluoncv.model_zoo.yolo.yolo3 import _upsample, YOLODetectionBlockV3
 from gluoncv.model_zoo.yolo import yolo3_darknet53_custom, yolo3_mobilenet1_0_coco, yolo3_mobilenet1_0_custom
@@ -74,12 +73,12 @@ class YOLOV3(gluon.HybridBlock):
 
     def __init__(self, stages, channels, anchors, strides, classes, alloc_size=(128, 128), nms_thresh=0.45, nms_topk=400,
                  post_nms=100, pos_iou_thresh=1.0, ignore_iou_thresh=0.7,norm_layer=BatchNorm, norm_kwargs=None,
-                 coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
+                 coop_configs=None, label_smooth=True, nms_mode='Default', coop_mode='flat',
                  sigma_weight=1.6, specific_anchor='default', sa_level=1, kernels=None, coop_loss=False, **kwargs):
         super(YOLOV3, self).__init__(**kwargs)
         assert nms_mode in ['Default', 'Merge', 'Exclude']
-        self._coop_configs = coop_configs
-        self._order_sig_config = get_order_config(coop_configs)
+        # self._coop_configs = coop_configs
+        # self._order_sig_config = get_order_config(coop_configs)
         self._classes = classes
         self._num_class = len(classes)
         self.nms_thresh = nms_thresh
@@ -329,7 +328,7 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, d
 
 # to build the backbone for yolov3
 def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=BatchNorm, norm_kwargs=None,
-                         coop_configs=((1,), (1,), (1,)), label_smooth=True, nms_mode='Default', coop_mode='flat',
+                         coop_configs=None, label_smooth=True, nms_mode='Default', coop_mode='flat',
                          sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor='default', sa_level=1, sq_level=5,
                          coop_loss=False, **kwargs):
     """

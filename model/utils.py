@@ -4,25 +4,39 @@ import mxnet as mx
 import numpy as np
 from gluoncv.data.batchify import Pad
 
+#
+# def get_order_config(coop_configs):
+#     order_config = []
+#     for configs in coop_configs:
+#         for config in configs:
+#             if config not in order_config:
+#                 order_config.append(config)
+#
+#     return sorted(order_config)
 
-def get_order_config(coop_configs):
-    order_config = []
-    for configs in coop_configs:
+
+def config(args):
+
+    def cfg(cfg_str):
+        cfg_list = []
+        configs = list(filter(None, cfg_str.split(',')))
+        if len(configs) == 1:
+            configs = configs * 3
+        if len(configs) != 3:
+            raise Exception('coop configs should have three layers!')
         for config in configs:
-            if config not in order_config:
-                order_config.append(config)
+            # coop_configs.append(tuple(sorted(map(int, filter(None, config.split(' '))))))
+            config = list(map(int, filter(None, config.split(' '))))
+            if len(config) < 3:
+                config = config * 3
+            else:
+                config = np.array(config).reshape(-1, 3).transpose()
+            cfg_list.append(config)
+        return np.array(cfg_list).reshape((3, 3, -1))
 
-    return sorted(order_config)
-
-
-def get_coop_config(coop_configs_str):
-    coop_configs = []
-    configs = list(filter(None, coop_configs_str.split(',')))
-    if len(configs) != 3:
-        raise Exception('coop configs should have three layers!')
-    for config in configs:
-        coop_configs.append(tuple(sorted(map(int, filter(None, config.split(' '))))))
-    return tuple(coop_configs)
+    args.coop_cfg = cfg(args.coop_cfg)
+    args.margin = cfg(args.margin)
+    args.thre_cls = cfg(args.thre_cls)
 
 
 def bbox_iou(box1, box2, x1y1x2y2=True):
