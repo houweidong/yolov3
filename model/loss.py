@@ -184,7 +184,7 @@ class SelfLoss(Loss):
         # center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers, F.broadcast_div(F.broadcast_add(
         #     center_t, 0.5 * coop), coop), F.broadcast_mul(weight, coop**0.3)), denorm*2)
         center_loss = F.broadcast_mul(self._sigmoid_ce(box_centers, F.broadcast_div(F.broadcast_add(
-            center_t, 0.5 * coop), coop), weight, denorm*2))
+            center_t, 0.5 * coop), coop), weight), denorm*2)
         scale_loss = F.broadcast_mul(self._l1_loss(box_scales, scale_t, weight), denorm * 2)
 
         with autograd.pause():
