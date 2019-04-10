@@ -354,7 +354,7 @@ if __name__ == '__main__':
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
-        async_net = get_model(net_name, pretrained_base=False, specific_anchor=args.specific_anchor,
+        async_net = get_model(net_name, pretrained_base=False, coop_configs=args.coop_cfg, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained=args.pretrained, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
