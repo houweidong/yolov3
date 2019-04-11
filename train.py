@@ -116,6 +116,7 @@ def parse_args():
     parser.add_argument('--sa-level', type=int, default=2, choices=[1, 2, 3])
     parser.add_argument('--sq-level', type=int, default=5)
     parser.add_argument('--coop-loss', action='store_true', help='whether to train with cooperation loss.')
+    parser.add_argument('--separate', action='store_true', help='whether to train coord and obj separately.')
     args = parser.parse_args()
     return args
 
@@ -353,14 +354,14 @@ if __name__ == '__main__':
                         norm_kwargs={'num_devices': len(ctx)}, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss, separate=args.separate)
         async_net = get_model(net_name, pretrained_base=False, specific_anchor=args.specific_anchor,
                         sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)  # used by cpu worker
     else:
         net = get_model(net_name, pretrained=args.pretrained, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
                         nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss, separate=args.separate)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())

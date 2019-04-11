@@ -62,7 +62,7 @@ class YOLOOutputV3(gluon.HybridBlock):
 
     def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=None,
                  alloc_size=(128, 128), label_smooth=True, specific_anchor='default', sa_level=1, kernels=None,
-                 coop_loss=False, norm_layer=BatchNorm, norm_kwargs=None, **kwargs):
+                 coop_loss=False, norm_layer=BatchNorm, norm_kwargs=None, separate=False, **kwargs):
         super(YOLOOutputV3, self).__init__(**kwargs)
         anchors = np.array(anchors).astype('float32')
         # suppose we don't config the xywho numbers more than or equal with 3
@@ -79,7 +79,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         dic = {32: slice(0, 1), 16: slice(1, 5), 8: slice(5, 21)}
         assert coop_mode in ['flat', 'convex', 'concave', 'equal']
         self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
-                              coop_mode, sigma_weight, coop_loss)
+                              coop_mode, sigma_weight, coop_loss, separate)
         with self.name_scope():
             self.prediction = select_yolo_output(self.all_pred, specific_anchor, sa_level, kernels,
                                                  norm_layer=norm_layer, norm_kwargs=norm_kwargs)

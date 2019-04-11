@@ -74,7 +74,7 @@ class YOLOV3(gluon.HybridBlock):
     def __init__(self, stages, channels, anchors, strides, classes, alloc_size=(128, 128), nms_thresh=0.45, nms_topk=400,
                  post_nms=100, pos_iou_thresh=1.0, ignore_iou_thresh=0.7,norm_layer=BatchNorm, norm_kwargs=None,
                  coop_configs=None, label_smooth=True, nms_mode='Default', coop_mode='flat',
-                 sigma_weight=1.6, specific_anchor='default', sa_level=1, kernels=None, coop_loss=False, **kwargs):
+                 sigma_weight=1.6, specific_anchor='default', sa_level=1, kernels=None, coop_loss=False, separate=False, **kwargs):
         super(YOLOV3, self).__init__(**kwargs)
         assert nms_mode in ['Default', 'Merge', 'Exclude']
         # self._coop_configs = coop_configs
@@ -107,7 +107,7 @@ class YOLOV3(gluon.HybridBlock):
                 output = YOLOOutputV3(i, len(classes), anchor, stride, self._ignore_iou_thresh, coop_mode, sigma_weight,
                                       coop_config=coop_config, alloc_size=alloc_size, label_smooth=label_smooth,
                                       specific_anchor=specific_anchor, sa_level=sa_level, kernels=kernel, coop_loss=coop_loss,
-                                      norm_layer=norm_layer, norm_kwargs=norm_kwargs)
+                                      norm_layer=norm_layer, norm_kwargs=norm_kwargs, separate=separate)
                 self.yolo_outputs.add(output)
                 if i > 0:
                     self.transitions.add(_conv2d(channel, 1, 0, 1,
@@ -313,11 +313,11 @@ class YOLOV3(gluon.HybridBlock):
 def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, dataset, pretrained=False, ctx=mx.cpu(),
                root=os.path.join('~', '.mxnet', 'models'), nms_mode='Default', label_smooth=True, coop_mode='flat',
                sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor='default', sa_level=1, kernels=None,
-               coop_loss=False, **kwargs):
+               coop_loss=False, separate=False, **kwargs):
     net = YOLOV3(stages, filters, anchors, strides,
                  classes=classes, coop_configs=coop_configs, label_smooth=label_smooth, nms_mode=nms_mode,
-                 coop_mode=coop_mode, sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh,
-                 specific_anchor=specific_anchor, sa_level=sa_level, kernels=kernels, coop_loss=coop_loss, **kwargs)
+                 coop_mode=coop_mode, sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, specific_anchor=specific_anchor,
+                 sa_level=sa_level, kernels=kernels, coop_loss=coop_loss, separate=separate, **kwargs)
     if pretrained:
         from gluoncv.model_zoo.model_store import get_model_file
         full_name = '_'.join(('yolo3', name, dataset))
@@ -330,7 +330,7 @@ def get_yolov3(name, stages, filters, anchors, strides, classes, coop_configs, d
 def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=BatchNorm, norm_kwargs=None,
                          coop_configs=None, label_smooth=True, nms_mode='Default', coop_mode='flat',
                          sigma_weight=1.6, ignore_iou_thresh=0.7, specific_anchor='default', sa_level=1, sq_level=5,
-                         coop_loss=False, **kwargs):
+                         coop_loss=False, separate=False, **kwargs):
     """
     Returns
     -------
@@ -358,7 +358,7 @@ def yolo3_darknet53_coco(pretrained_base=True, pretrained=False, norm_layer=Batc
         'darknet53', stages, [512, 256, 128], anchors, strides, classes, coop_configs, 'coco', pretrained=pretrained,
         norm_layer=norm_layer, norm_kwargs=norm_kwargs, label_smooth=label_smooth, nms_mode=nms_mode, coop_mode=coop_mode,
         sigma_weight=sigma_weight, ignore_iou_thresh=ignore_iou_thresh, specific_anchor=specific_anchor, sa_level=sa_level,
-        kernels=kernels, coop_loss=coop_loss, **kwargs)
+        kernels=kernels, coop_loss=coop_loss, separate=separate, **kwargs)
 
 
 _models = {
