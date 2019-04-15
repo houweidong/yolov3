@@ -37,6 +37,7 @@ def config(args):
     args.coop_cfg = cfg(args.coop_cfg)
     args.margin = cfg(args.margin) if hasattr(args, 'margin') else None
     args.thre_cls = cfg(args.thre_cls) if hasattr(args, 'thre_cls') else None
+    args.sigma = cfg(args.sigma) if hasattr(args, 'sigma-weight') else None
 
 
 def bbox_iou(box1, box2, x1y1x2y2=True):

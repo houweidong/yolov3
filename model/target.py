@@ -336,16 +336,20 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             for i, cfgss in enumerate(self._coop_configs):
                 index = slice(_offsets[i], _offsets[i + 1])
                 for j, cfgs in enumerate(cfgss):
-                    cond_modify_cls = (weights_bl[:, index, j, 0, :] > self._threshold_cls[i, j, 0] / 2) + \
-                        ((distance_margin[:, index, j, :] <= min(self._margin[i, j])) * (weights_bl[:, index, j, 0, :] > 0.5))
+                    cond_modify_cls = (weights_bl[:, index, j, 0, :] > self._threshold_cls[i, j, 0] / 2)  # + \
+                    # ((distance_margin[:, index, j, :] <= min(self._margin[i, j])) * (weights_bl[:, index, j, 0, :] > 0.5))
                     mask_cls[:, index, j, :] = mask_cls[:, index, j, :] - cond_modify_cls * 100
                     for k, cfg in enumerate(cfgs):
-                        cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2) * ((distance_margin[:, index, j, :]
-                                       > self._margin[i, j, k]) + (weights_bl[:, index, j, k, :] <= 0.5))
+                        cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2)  # * ((distance_margin[:, index, j, :]
+                        # > self._margin[i, j, k]) + (weights_bl[:, index, j, k, :] <= 0.5))
+                        fct_margin = nd.where(distance_margin[:, index, j, :] > self._margin[i, j, k], nd.ones_like(
+                            distance_margin[:, index, j, :]), distance_margin[:, index, j, :] / self._margin[i, j, k])
+                        fct_margin = nd.power(fct_margin, 1.5)
                         if self._coop_mode == 'flat':
-                            weights_bl[:, index, j, k, :] = nd.where(cond_modify, nd.ones_like(cond_modify)/(cfg*cfg), nd.zeros_like(cond_modify))
+                            weights_bl[:, index, j, k, :] = nd.where(cond_modify,
+                                nd.ones_like(cond_modify)/(cfg*cfg) * fct_margin, nd.zeros_like(cond_modify))
                         elif self._coop_mode == 'convex':
-                            guassian_dis = nd.exp(-1 * distance[:, index, j, :] / (self._sigma_weight ** 2))
+                            guassian_dis = nd.exp(-1 * distance[:, index, j, :] / (self._sigma_weight[i, j, k] ** 2)) * fct_margin / (cfg ** 0.8)
                             weights_bl[:, index, j, k, :] = nd.where(cond_modify, guassian_dis, nd.zeros_like(cond_modify))
                         else:
                             raise Exception('only support flat, convex now')

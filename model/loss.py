@@ -257,4 +257,4 @@ class SelfCoopLoss(Loss):
         #     cls_lr_target, mask_ojcl_vtc.tile(reps=(2*self._num_class,))), denorm_cls * 2)
 
         # return obj_coloss, bct_coloss, bsc_coloss, cls_coloss
-        return bct_coloss, bsc_coloss
+        return 0.5*bct_coloss, 0.5*bsc_coloss
