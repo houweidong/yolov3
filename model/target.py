@@ -343,7 +343,7 @@ class SelfPrefetchTargetGenerator(gluon.Block):
                         cond_modify = (weights_bl[:, index, j, k, :] <= cfg / 2) * ((distance_margin[:, index, j, :]
                                        > self._margin[i, j, k]) + (weights_bl[:, index, j, k, :] <= 0.5))
                         if self._coop_mode == 'flat':
-                            weights_bl[:, index, j, k, :] = nd.where(cond_modify, nd.ones_like(cond_modify), nd.zeros_like(cond_modify))
+                            weights_bl[:, index, j, k, :] = nd.where(cond_modify, nd.ones_like(cond_modify)/(cfg*cfg), nd.zeros_like(cond_modify))
                         elif self._coop_mode == 'convex':
                             guassian_dis = nd.exp(-1 * distance[:, index, j, :] / (self._sigma_weight ** 2))
                             weights_bl[:, index, j, k, :] = nd.where(cond_modify, guassian_dis, nd.zeros_like(cond_modify))
@@ -424,12 +424,14 @@ class SelfPrefetchTargetGenerator(gluon.Block):
             if self._coop_loss:
                 mask_vtc = mask_vtc.reshape((0, -3, 0, 0)) * weights
                 mask_hrz = mask_hrz.reshape((0, -3, 0, 0)) * weights
+            fac_cls = weights_bl[:, :, -1:, :]
             if self._separate:
                 obj = nd.where(mask_cls >= 0, obj, nd.zeros_like(obj))
+                fac_cls = 1
+            fctr_cls = nd.where(mask_cls >= 0, objectness * fac_cls, nd.zeros_like(objectness))
+            mask_cls = nd.one_hot(mask_cls.squeeze(axis=-1), depth=self._num_class)
             if not self._prob_fit:
                 box_index[:] = -1
-            fctr_cls = nd.where(mask_cls >= 0, objectness, nd.zeros_like(objectness))
-            mask_cls = nd.one_hot(mask_cls.squeeze(axis=-1), depth=self._num_class)
             if self._label_smooth:
                 smooth_weight = 1. / self._num_class
                 mask_cls = nd.where(mask_cls > 0.5, mask_cls - smooth_weight, nd.ones_like(mask_cls) * smooth_weight)
