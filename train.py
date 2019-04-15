@@ -105,11 +105,10 @@ def parse_args():
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
                              'concave: marginal grids have higher weight than the center grids in the training phase.'
                              'equal: consider the num of the same level grids to make loss equal')
-    parser.add_argument('--sigma-weight', type=float, default=1.6,
+    parser.add_argument('--sigma-weight', type=float, default=1.,
                         help='when the coop_mode is convex or concave, they need a Gaussian sigma')
     parser.add_argument('--results-dir', default='result_test', help='path to save results')
     parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
-    parser.add_argument('--equal-train', action='store_true', help='whether to eliminate inequality between crowd-obj.')
     parser.add_argument('--ignore-iou-thresh', type=float, default=0.7)
     parser.add_argument('--specific-anchor', type=str, default='default',
                         choices=['default', 'rectangle', 'rectanglefix', 'square'])
@@ -148,15 +147,18 @@ def get_dataset(dataset, args):
 def get_dataloader(net, train_dataset, val_dataset, data_shape, batch_size, num_workers, args):
     """Get dataloader."""
     width, height = data_shape, data_shape
-    batchify_fn = Tuple(*([Stack() for _ in range(8)] + [Pad(axis=0, pad_val=-1) for _ in
-                                                         range(1)]))  # stack image, all targets generated
+    end = 10 if args.coop_loss else 8
+    batchify_fn = Tuple(*([Stack() for _ in range(end)] + [Pad(axis=0, pad_val=-1) for _ in
+                                                           range(1)]))  # stack image, all targets generated
     if args.no_random_shape:
         train_loader = gluon.data.DataLoader(train_dataset.transform(SelfDefaultTrainTransform(width, height, net,
-            mixup=args.mixup, coop_configs=args.coop_cfg, equal_train=args.equal_train, margin=args.margin, thre_cls=args.thre_cls)),
+            mixup=args.mixup, coop_configs=args.coop_cfg, margin=args.margin, thre_cls=args.thre_cls,
+            coop_loss=args.coop_loss, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight, label_smooth=args.label_smooth)),
             batch_size, True, batchify_fn=batchify_fn, last_batch='rollover', num_workers=num_workers)
     else:
         transform_fns = [SelfDefaultTrainTransform(x * 32, x * 32, net, coop_configs=args.coop_cfg,
-            mixup=args.mixup, equal_train=args.equal_train, margin=args.margin, thre_cls=args.thre_cls) for x in range(10, 20)]
+            mixup=args.mixup, margin=args.margin, thre_cls=args.thre_cls, coop_loss=args.coop_loss,
+            coop_mode=args.coop_mode, sigma_weight=args.sigma_weight, label_smooth=args.label_smooth) for x in range(10, 20)]
         train_loader = RandomTransformDataLoader(
             transform_fns, train_dataset, batch_size=batch_size, interval=10, last_batch='rollover',
             shuffle=True, batchify_fn=batchify_fn, num_workers=num_workers)
@@ -199,10 +201,10 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
             # to deal with the self nms and the default nms separately
             if nms_mode == 'Default':
                 ids, scores, bboxes = net(x)
-            else:
-                results = net(x)
-                ids, scores, bboxes = self_box_nms(
-                    results, overlap_thresh=0.45, valid_thresh=0.01, topk=400, nms_style=nms_mode)
+            # else:
+            #     results = net(x)
+            #     ids, scores, bboxes = self_box_nms(
+            #         results, overlap_thresh=0.45, valid_thresh=0.01, topk=400, nms_style=nms_mode)
             det_ids.append(ids)
             det_scores.append(scores)
             # clip to image size
@@ -211,18 +213,18 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
             gt_ids.append(y.slice_axis(axis=-1, begin=4, end=5))
             gt_bboxes.append(y.slice_axis(axis=-1, begin=0, end=4))
             gt_difficults.append(y.slice_axis(axis=-1, begin=5, end=6) if y.shape[-1] > 5 else None)
-        if nms_mode != 'Default':
-            mxim = 0
-            for det_bbox in det_bboxes:
-                if det_bbox.shape[1] > mxim:
-                    mxim = det_bbox.shape[1]
-            for ind in range(len(det_bboxes)):
-                det_bboxes[ind] = nd.pad(det_bboxes[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim - det_bboxes[ind].shape[1], 0, 0), constant_value=-1)
-                gt_ids[ind] = nd.pad(gt_ids[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim - gt_ids[ind].shape[1], 0, 0), constant_value=-1)
-                gt_bboxes[ind] = nd.pad(gt_bboxes[ind], mode='constant', pad_width=(
-                    0, 0, 0, mxim - gt_bboxes[ind].shape[1], 0, 0), constant_value=-1)
+        # if nms_mode != 'Default':
+        #     mxim = 0
+        #     for det_bbox in det_bboxes:
+        #         if det_bbox.shape[1] > mxim:
+        #             mxim = det_bbox.shape[1]
+        #     for ind in range(len(det_bboxes)):
+        #         det_bboxes[ind] = nd.pad(det_bboxes[ind], mode='constant', pad_width=(
+        #             0, 0, 0, mxim - det_bboxes[ind].shape[1], 0, 0), constant_value=-1)
+        #         gt_ids[ind] = nd.pad(gt_ids[ind], mode='constant', pad_width=(
+        #             0, 0, 0, mxim - gt_ids[ind].shape[1], 0, 0), constant_value=-1)
+        #         gt_bboxes[ind] = nd.pad(gt_bboxes[ind], mode='constant', pad_width=(
+        #             0, 0, 0, mxim - gt_bboxes[ind].shape[1], 0, 0), constant_value=-1)
         # update metric
         eval_metric.update(det_bboxes, det_ids, det_scores, gt_bboxes, gt_ids, gt_difficults)
     return eval_metric.get()
@@ -252,14 +254,7 @@ def train(net, train_data, val_data, eval_metric, ctx, argsj, logeer):
         {'wd': args.wd, 'momentum': args.momentum, 'lr_scheduler': lr_scheduler},
         kvstore='local')
 
-    # metrics
-    # metric_loss = LossMetric(get_order_config(coop_cfg))
-    metric_loss = LossMetricSimple()
-    # metrics
-    # obj_metrics = mx.metric.Loss('ObjLoss')
-    # center_metrics = mx.metric.Loss('BoxCenterLoss')
-    # scale_metrics = mx.metric.Loss('BoxScaleLoss')
-    # cls_metrics = mx.metric.Loss('ClassLoss')
+    metric_loss = LossMetricSimple(args.coop_loss)
 
     logger.info('Start training from [Epoch {}]'.format(args.start_epoch))
     best_map = [0]
@@ -293,13 +288,15 @@ def train(net, train_data, val_data, eval_metric, ctx, argsj, logeer):
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
-            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, 8)]
-            gt_boxes = gluon.utils.split_and_load(batch[8], ctx_list=ctx, batch_axis=0)
+            end = 10 if args.coop_loss else 8
+            fixed_targets = [gluon.utils.split_and_load(batch[it], ctx_list=ctx, batch_axis=0) for it in range(1, end)]
+            gt_boxes = gluon.utils.split_and_load(batch[end], ctx_list=ctx, batch_axis=0)
             sum_losses = []
             metric_loss.initial()
             with autograd.record():
                 for ix, x in enumerate(data):
                     loss_list = net(x, gt_boxes[ix], *[ft[ix] for ft in fixed_targets])
+                    # a = loss_list[0:4] + loss_list[5:]
                     sum_losses.append(sum([l for l in loss_list]))
                     metric_loss.append(loss_list)
                 autograd.backward(sum_losses)
@@ -351,17 +348,16 @@ if __name__ == '__main__':
     # use sync bn if specified
     if args.syncbn and len(ctx) > 1:
         net = get_model(net_name, pretrained=args.pretrained, norm_layer=gluon.contrib.nn.SyncBatchNorm,
-                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
-                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
+                        norm_kwargs={'num_devices': len(ctx)}, coop_configs=args.coop_cfg, nms_mode=args.nms_mode,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss, separate=args.separate)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
+        # used by cpu worker
         async_net = get_model(net_name, pretrained_base=False, coop_configs=args.coop_cfg, specific_anchor=args.specific_anchor,
-                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)  # used by cpu worker
+                              sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
     else:
-        net = get_model(net_name, pretrained=args.pretrained, coop_configs=args.coop_cfg, label_smooth=args.label_smooth,
-                        nms_mode=args.nms_mode, coop_mode=args.coop_mode, sigma_weight=args.sigma_weight,
+        net = get_model(net_name, pretrained=args.pretrained, coop_configs=args.coop_cfg, nms_mode=args.nms_mode,
                         ignore_iou_thresh=args.ignore_iou_thresh, specific_anchor=args.specific_anchor,
-                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss, separate=args.separate)
+                        sa_level=args.sa_level, sq_level=args.sq_level, coop_loss=args.coop_loss)
         async_net = net
     if args.resume.strip():
         net.load_parameters(args.resume.strip())

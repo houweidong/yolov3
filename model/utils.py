@@ -204,13 +204,15 @@ class LossMetric:
 # simple indicate not to distinguish level
 class LossMetricSimple:
 
-    def __init__(self):
+    def __init__(self, coop_loss):
+        name = ['ObjLoss', 'BoxCenterLoss', 'BoxScaleLoss', 'ClassLoss', 'CoopBoxCenterLoss', 'CoopBoxScaleLoss'] \
+            if coop_loss else ['ObjLoss', 'BoxCenterLoss', 'BoxScaleLoss', 'ClassLoss']
         self.metrics_list = []
-        self.loss_list = [[], [], [], []]
-        self.len_metrics = len(self.loss_list)
-        name = ['ObjLoss', 'BoxCenterLoss', 'BoxScaleLoss', 'ClassLoss']
+        self.len_metrics = len(name)
         for i in range(self.len_metrics):
             self.metrics_list.append(mx.metric.Loss(name[i]))
+
+        self.loss_list = [[]] * self.len_metrics
 
     def initial(self):
         for i in range(self.len_metrics):

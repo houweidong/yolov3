@@ -6,7 +6,7 @@ from mxnet import autograd
 from mxnet.gluon import nn
 from mxnet.gluon.nn import BatchNorm
 from gluoncv.model_zoo.yolo.darknet import _conv2d
-from model.loss import SelfLoss
+from model.loss import SelfLoss, SelfCoopLoss
 
 
 def select_yolo_output(out_channel, specific_anchor, sa_level, kernel, norm_layer=BatchNorm, norm_kwargs=None):
@@ -43,15 +43,6 @@ class YOLOOutputV3(gluon.HybridBlock):
         Stride of feature map.
     ignore_iou_thresh : float
         ignore the box loss whose iou with the gt larger than the ignore_iou_thresh
-    coop_mode : string
-        "flat", different level grids have same weight loss in the training phase
-        "convex", the center grids have higher weight than the marginal grids in the training phase
-        "concave", the marginal grids have higher weight than the center grids in the training phase
-        "equal", consider the num of the same level grids to make loss equal
-    sigma_weight : float
-        for coop_mode params, we use Gaussian distribution to generate the weights according to the grid level,
-        the sigma_weight is the distribution's params
-    coop_configs : tuple, such as (1, )
         current sigmoid config
     alloc_size : tuple of int, default is (128, 128)
         For advanced users. Define `alloc_size` to generate large enough anchor
@@ -60,9 +51,9 @@ class YOLOOutputV3(gluon.HybridBlock):
         to export to symbol so we can run it in c++, Scalar, etc.
     """
 
-    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_mode, sigma_weight, coop_config=None,
-                 alloc_size=(128, 128), label_smooth=True, specific_anchor='default', sa_level=1, kernels=None,
-                 coop_loss=False, norm_layer=BatchNorm, norm_kwargs=None, separate=False, **kwargs):
+    def __init__(self, index, num_class, anchors, stride, ignore_iou_thresh, coop_config=None, alloc_size=(128, 128),
+                 specific_anchor='default', sa_level=1, kernels=None, coop_loss=False, norm_layer=BatchNorm,
+                 norm_kwargs=None, **kwargs):
         super(YOLOOutputV3, self).__init__(**kwargs)
         anchors = np.array(anchors).astype('float32')
         # suppose we don't config the xywho numbers more than or equal with 3
@@ -77,9 +68,9 @@ class YOLOOutputV3(gluon.HybridBlock):
 
         self._stride = stride
         dic = {32: slice(0, 1), 16: slice(1, 5), 8: slice(5, 21)}
-        assert coop_mode in ['flat', 'convex', 'concave', 'equal']
-        self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride], label_smooth,
-                              coop_mode, sigma_weight, coop_loss, separate)
+        self._loss = SelfLoss(index, self._classes, ignore_iou_thresh, coop_config, dic[self._stride])
+        if self._coop_loss:
+            self._cooploss = SelfCoopLoss(self._classes, coop_config, dic[self._stride])
         with self.name_scope():
             self.prediction = select_yolo_output(self.all_pred, specific_anchor, sa_level, kernels,
                                                  norm_layer=norm_layer, norm_kwargs=norm_kwargs)
@@ -185,6 +176,7 @@ class YOLOOutputV3(gluon.HybridBlock):
         objness = xywho.slice_axis(axis=-1, begin=4, end=None)
 
         # valid offsets, (1, 1, height, width, 2)
+        align_x = F.slice_axis(F.slice_axis(x, axis=0, begin=0, end=1), axis=1, begin=0, end=3).transpose(axes=(0, 2, 3, 1))
         offsets = F.slice_like(offsets_self, x * 0, axes=(2, 3))
         horizontal_sig_levels = F.slice_like(horizontal_sig_levels, F.transpose(x * 0, axes=(2, 3, 0, 1)),
                                              axes=(0, 1)).reshape((-3, 0, 0, 0)).expand_dims(axis=0)
@@ -205,9 +197,12 @@ class YOLOOutputV3(gluon.HybridBlock):
                 ctrs = ctrs.reshape((0, -3, 0, 2))
                 raw_box_scales = raw_box_scales.reshape((0, -3, 0, 2))
                 class_pred = class_pred.reshape((0, -3, -1))
-                bbox = bbox.reshape((0, -1, 4))
-                return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox,
-                                  horizontal_sig_levels.reshape((0, -3, -1, 1)), *args)
+                # bbox = bbox.reshape((0, -1, 4))
+                if self._coop_loss:
+                    return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox.reshape((0, -1, 4)), horizontal_sig_levels.reshape((0, -3, -1, 1)), *args[:-2]) + \
+                           self._cooploss(ctrs, raw_box_scales, align_x, horizontal_sig_levels.reshape((0, -3, -1, 1)), *args[-3:])
+                else:
+                    return self._loss(objness, ctrs, raw_box_scales, class_pred, bbox.reshape((0, -1, 4)), horizontal_sig_levels.reshape((0, -3, -1, 1)), *args)
             else:
                 return anchors_self, offsets.slice(begin=(None, None, 0, 0, 0), end=(None, None, 1, 1, 1))
 
