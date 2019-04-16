@@ -230,7 +230,7 @@ def validate(net, val_data, ctx, eval_metric, nms_mode):
     return eval_metric.get()
 
 
-def train(net, train_data, val_data, eval_metric, ctx, argsj, logeer):
+def train(net, train_data, val_data, eval_metric, ctx, args, logger):
     """Training pipeline"""
     net.collect_params().reset_ctx(ctx)
     if args.no_wd:
@@ -282,9 +282,9 @@ def train(net, train_data, val_data, eval_metric, ctx, argsj, logeer):
         net.hybridize()
         test = 0
         for i, batch in enumerate(train_data):
-            # test += 1
-            # if test > 200:
-            #     break
+            test += 1
+            if test > 200:
+                break
             batch_size = batch[0].shape[0]
             data = gluon.utils.split_and_load(batch[0], ctx_list=ctx, batch_axis=0)
             # objectness, center_targets, scale_targets, weights, class_mask, obj_mask
