@@ -98,14 +98,14 @@ def parse_args():
                              '" " separate different anchor and sig level in a same output layer. '
                              'such as 1,2 3 4,1 2 3')
     parser.add_argument('--margin', type=str, default='0')
-    parser.add_argument('--thre-cls', type=str, default='1')
+    parser.add_argument('--thre-cls', type=str, default='1.25')
     parser.add_argument('--nms-mode', type=str, default='Default', choices=['Default', 'Exclude', 'Merge'])
     parser.add_argument('--coop-mode', type=str, default='flat', choices=['flat', 'convex', 'concave', 'equal'],
                         help='flat: different level grids have same weight loss in the training phase.'
                              'convex: center grids have higher weight than the marginal grids in the training phase.'
                              'concave: marginal grids have higher weight than the center grids in the training phase.'
                              'equal: consider the num of the same level grids to make loss equal')
-    parser.add_argument('--sigma-weight', type=float, default=1.,
+    parser.add_argument('--sigma-weight', type=str, default='1.2',
                         help='when the coop_mode is convex or concave, they need a Gaussian sigma')
     parser.add_argument('--results-dir', default='result_test', help='path to save results')
     parser.add_argument('--pretrained', action='store_true', help='whether to train for detection checkpoint.')
