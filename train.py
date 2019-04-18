@@ -18,7 +18,7 @@ from gluoncv.data.transforms.presets.yolo import YOLO3DefaultValTransform
 from gluoncv.data.dataloader import RandomTransformDataLoader
 from gluoncv.utils.metrics.voc_detection import VOC07MApMetric
 from gluoncv.utils.metrics.coco_detection import COCODetectionMetric
-from gluoncv.utils import LRScheduler, LRSequential
+from utils.lr_scheduler import LRScheduler
 from model.utils import LossMetricSimple, config, self_box_nms
 from model.target import SelfDefaultTrainTransform
 from mxnet import nd
@@ -240,14 +240,13 @@ def train(net, train_data, val_data, eval_metric, ctx, args, logger):
         lr_decay_epoch = list(range(args.lr_decay_period, args.epochs, args.lr_decay_period))
     else:
         lr_decay_epoch = [int(i) for i in args.lr_decay_epoch.split(',')]
-    num_batches = args.num_samples // args.batch_size
-    lr_scheduler = LRSequential(
-        [LRScheduler('linear', base_lr=0, target_lr=args.lr,
-                     nepochs=args.warmup_epochs, iters_per_epoch=num_batches),
-         LRScheduler(args.lr_mode, base_lr=args.lr,
-                     nepochs=args.epochs - args.warmup_epochs,
-                     step_epoch=lr_decay_epoch,
-                     step_factor=args.lr_decay, power=2)])
+    lr_scheduler = LRScheduler(mode=args.lr_mode,
+                               baselr=args.lr,
+                               niters=args.num_samples // args.batch_size,
+                               nepochs=args.epochs,
+                               step=lr_decay_epoch,
+                               step_factor=args.lr_decay, power=2,
+                               warmup_epochs=args.warmup_epochs)
 
     trainer = gluon.Trainer(
         net.collect_params(), 'sgd',
@@ -300,6 +299,7 @@ def train(net, train_data, val_data, eval_metric, ctx, args, logger):
                     sum_losses.append(sum([l for l in loss_list]))
                     metric_loss.append(loss_list)
                 autograd.backward(sum_losses)
+            lr_scheduler.update(i, epoch)
             trainer.step(batch_size)
             metric_loss.update()
             if args.log_interval and not (i + 1) % args.log_interval:
