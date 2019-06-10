@@ -56,12 +56,17 @@ def forward(image_p, ctx, args):
 
     try:
         if not args.demo:
+            result = cv2.imread(image_p)
+            if result is None:
+                print('None image')
+                raise Exception('None image')
             image = mx.image.imread(image_p)
     except:
         print(image_p)
         os.remove(image_p)
         raise Exception('valid picture')
     else:
+        print(image_p)
         max_len = max(image.shape[0], image.shape[1])
         min_len = min(image.shape[0], image.shape[1])
         # short = int(args.short)
@@ -122,7 +127,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Test with YOLO networks.')
     parser.add_argument('--network', type=str, default='yolo3_darknet53_coco',
                         help="Base network name")
-    parser.add_argument('--images', type=str, default='nanzhuang',
+    parser.add_argument('--images', type=str, default='nan1',
                         help='Test images, use comma to split multiple.')
     parser.add_argument('--gpus', type=str, default='0',
                         help='Training with GPUs, you can specify 1,3 for example.')
