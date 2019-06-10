@@ -15,20 +15,26 @@ from mxnet import nd
 from utils.timer import Timer
 
 
-def w2f(image_d, ctx, args, img_bbox_d):
-    if os.path.isdir(image_d):
+def w2f(image_d, ctx, args, img_bbox_d, f_point=None):
+    # if os.path.isdir(image_d):
+    if not f_point:
+
+        file = os.path.join(image_d, os.listdir(image_d)[0])
+        f_point = None if os.path.isdir(file) else open(img_bbox_d + '.txt', 'a')
 
         for image_dd in os.listdir(image_d):
             dir = image_d.split('/')[-1]
             try:
-                w2f(os.path.join(image_d, image_dd), ctx, args, os.path.join(img_bbox_d, dir))
-            except:
+                w2f(os.path.join(image_d, image_dd), ctx, args, os.path.join(img_bbox_d, dir), f_point)
+            except Exception as e:
+                print(e)
                 continue
+        f_point.close()
 
     else:
 
         # img_bbox_f = open(os.path.join(img_bbox_d, image_d.split('/')[-1] + '.txt'), 'a')
-        img_bbox_f = open(img_bbox_d + '.txt', 'a')
+        # img_bbox_f = open(img_bbox_d + '.txt', 'a')
         image = image_d
         try:
             ids, scores, bboxes, img = forward(image, ctx, args)
@@ -42,8 +48,8 @@ def w2f(image_d, ctx, args, img_bbox_d):
                 #     bboxes_str += ', '
                 bboxes_str += str(coord) + ' '
             write2file = image_name + ' ' + bboxes_str + '\n'
-            img_bbox_f.write(write2file)
-            img_bbox_f.close()
+            f_point.write(write2file)
+            # img_bbox_f.close()
 
 
 def forward(image_p, ctx, args):
@@ -112,12 +118,11 @@ def draw_result(ids, scores, bboxes, img):
             (x1 + 5, y1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
             (0, 0, 0), 1, lineType)
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Test with YOLO networks.')
     parser.add_argument('--network', type=str, default='yolo3_darknet53_coco',
                         help="Base network name")
-    parser.add_argument('--images', type=str, default='nanzhuang',
+    parser.add_argument('--images', type=str, default='男装',
                         help='Test images, use comma to split multiple.')
     parser.add_argument('--gpus', type=str, default='0',
                         help='Training with GPUs, you can specify 1,3 for example.')
@@ -135,10 +140,9 @@ def parse_args():
     parser.add_argument('--demo', action='store_true', help='whether to use camera or video.')
     parser.add_argument('--video', default=None, help='path to vedio')
     parser.add_argument('--w2f', action='store_true', help='whether to dump to the file')
-    parser.add_argument('--root', type=str, default='/root/dataset/', help='dataset root')
+    parser.add_argument('--root', type=str, default='/media/new/win10 data', help='dataset root')
     args = parser.parse_args()
     return args
-
 
 if __name__ == '__main__':
     args = parse_args()
@@ -153,7 +157,7 @@ if __name__ == '__main__':
     elif '.' not in args.images:
         # for file in os.listdir(args.root):
         #     print(file)
-        # print(os.listdir(args.root))
+        print(os.listdir(args.root))
         val_data = os.path.join(args.root, args.images)
         image_list = [os.path.join(val_data, img) for img in os.listdir(val_data)]
     else:
@@ -202,18 +206,20 @@ if __name__ == '__main__':
         if args.w2f:
             # we write the file to the fixed dir /root/dataset/results
             # img_bbox_f = open(os.path.join('/root/dataset/results', args.images+'.txt'),'w')
-            img_bbox_d = os.path.join('/root/dataset/results', args.images)
+            img_bbox_d = os.path.join('/home/new/dataset/results', args.images)
 
             isExists = os.path.exists(img_bbox_d)
 
             if not isExists:
                 os.makedirs(img_bbox_d)
 
+            f_point = None if os.path.isdir(image_list[0]) else open(img_bbox_d + '.txt', 'a')
+
         for image in image_list:
 
             # ids, scores, bboxes, img = forward(image, ctx, args)
             if args.w2f:
-                w2f(image, ctx, args, img_bbox_d)
+                w2f(image, ctx, args, img_bbox_d, f_point)
                 # image_name = image.split('/')[-1]
                 # bboxes_str = ''
                 # for i, coord in enumerate(np.reshape(bboxes, -1)):
@@ -228,6 +234,6 @@ if __name__ == '__main__':
                 ax = gcv.utils.viz.plot_bbox(img, bboxes, scores, ids, thresh=args.thresh,
                                              class_names=net.classes, ax=ax)
                 plt.show()
-        # if args.w2f:
-        #     img_bbox_f.close()
+        if args.w2f:
+            f_point.close()
 
